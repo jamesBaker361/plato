@@ -95,6 +95,7 @@ def get_loader(max_dim,styles,limit,batch_size):
     shuffle(paths)
     paths=paths[:limit]
     gen=generator(paths)
+    image_size=(max_dim,max_dim,3)
     return tf.data.Dataset.from_generator(gen,output_signature=(tf.TensorSpec(shape=image_size))).batch(batch_size,drop_remainder=True).shuffle(10,reshuffle_each_iteration=False)
 
     
