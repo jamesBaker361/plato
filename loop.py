@@ -34,6 +34,8 @@ os.makedirs(gen_img_dir+"/"+args.name)
 
 train_log_dir = 'logs/gradient_tape/' + args.name + '/train'
 test_log_dir = 'logs/gradient_tape/' + args.name + '/test'
+
+
 logpx_z_log_dir='logs/gradient_tape/' + args.name + '/logpx_z'
 logpz_log_dir='logs/gradient_tape/' + args.name + '/logpz'
 logqz_x_log_dir='logs/gradient_tape/' + args.name + '/logqz_x'
@@ -41,15 +43,16 @@ logqz_x_log_dir='logs/gradient_tape/' + args.name + '/logqz_x'
 train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 test_summary_writer = tf.summary.create_file_writer(test_log_dir)
 
+scalar_names=["logpx_z","logpz","logqz_x","kl","reconst"]
+
+dirs={}
 writers={}
 metrics={}
-for name,log_dir in zip(["logpx_z","logpz","logqz_x"],[logpx_z_log_dir,logpz_log_dir,logqz_x_log_dir]):
-    writers[name]=tf.summary.create_file_writer(log_dir)
+for name in scalar_names:
+    dirs[name]='logs/gradient_tape/' + args.name + '/'+name
+    writers[name]=tf.summary.create_file_writer(dirs[name])
     metrics[name]=tf.keras.metrics.Mean(name,dtype=tf.float32)
 
-px_z_summary_writer=tf.summary.create_file_writer(logpx_z_log_dir)
-pz_summary_writer=tf.summary.create_file_writer(logpz_log_dir)
-qz_x_summary_writer=tf.summary.create_file_writer(logqz_x_log_dir)
 
 train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
 test_loss = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
@@ -79,6 +82,24 @@ def compute_loss(model, x,test=False):
             #tf.summary.scalar('loss', metrics[name].result(), step=epoch)
     return -tf.reduce_mean(logpx_z + logpz - logqz_x)
 
+def compute_loss_2(model,x,test=False):
+    mean, logvar = model.encode(x)
+    z = model.reparameterize(mean, logvar)
+    x_logit = model.decode(z)
+    """def kl_loss(mean, log_var):
+    kl_loss =  -0.5 * K.sum(1 + log_var - K.square(mean) - K.exp(log_var), axis = 1)
+    return kl_loss
+    """
+    cross_ent=(x-x_logit)**2
+    reconst = tf.reduce_sum(cross_ent, axis=[1, 2, 3])
+    kl=-0.5 * tf.reduce_sum(1+logvar - mean**2 - tf.exp(logvar),axis=1)
+
+    if test:
+        for name,variable in zip(["reconst","kl"],[reconst,kl]):
+            metrics[name](tf.reduce_mean(variable))
+
+    return tf.reduce_mean(reconst+kl)
+
 
 @tf.function
 def train_step(model, x, optimizer):
@@ -88,7 +109,7 @@ def train_step(model, x, optimizer):
     update the model's parameters.
     """
     with tf.GradientTape() as tape:
-        loss = compute_loss(model, x)
+        loss = compute_loss_2(model, x)
     gradients = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(zip(gradients, model.trainable_variables))
     train_loss(loss)
@@ -139,13 +160,13 @@ for epoch in range(1, args.epochs + 1):
 
 
     for test_x in test_dataset:
-        test_loss(compute_loss(model, test_x,True))
+        test_loss(compute_loss_2(model, test_x,True))
     elbo = -test_loss.result()
 
     with test_summary_writer.as_default():
         tf.summary.scalar('loss', test_loss.result(), step=epoch)
 
-    for name in ["logpx_z","logpz","logqz_x"]:
+    for name in ["logpx_z","logpz","logqz_x","kl","reconst"]:
         with writers[name].as_default():
             tf.summary.scalar('loss', metrics[name].result(), step=epoch)
             metrics[name].reset_states()
