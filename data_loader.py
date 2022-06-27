@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from random import shuffle
 
-def get_img_paths(styles):
+def get_img_paths(styles,img_dir=img_dir):
     '''It takes a list of styles and returns a list of tuples of the form (image_path,style,image_name)
     
     Parameters
@@ -54,7 +54,7 @@ def load_img(path_to_img, max_dim=256):
     img=tf.image.random_crop(img,size=(max_dim,max_dim,3))
     return img
 
-def styles_to_npz(max_dim,styles=all_styles):
+def styles_to_npz(max_dim,styles=all_styles,root=npz_root):
     '''> It takes a list of styles, gets the paths to all the images in those styles, and then saves the
     images as numpy arrays in a folder named after the style
     
@@ -64,10 +64,13 @@ def styles_to_npz(max_dim,styles=all_styles):
         a list of styles to convert.
     
     '''
-    paths=get_img_paths(styles)
+    if root==npz_root:
+        paths=get_img_paths(styles)
+    else:
+        paths=get_img_paths(styles,mnist_dir)
     for (src,style,jpg) in paths:
         name=jpg[:jpg.find(".")]
-        new_np="{}/{}/{}.{}.npy".format(npz_root,style,name,max_dim)
+        new_np="{}/{}/{}.{}.npy".format(root,style,name,max_dim)
         if os.path.exists(new_np):
             continue
         try:
@@ -77,9 +80,9 @@ def styles_to_npz(max_dim,styles=all_styles):
             continue
         np.save(new_np,img)
 
-def get_npz_paths(max_dim,styles):
+def get_npz_paths(max_dim,styles,root=npz_root):
     ret=[]
-    all_styles_npz=[npz_root+"/"+s for s in styles]
+    all_styles_npz=[root+"/"+s for s in styles]
     for dir,style in zip(all_styles_npz,styles):
         ret+=[dir+"/"+image for image in os.listdir(dir) if image.endswith(('{}.npy'.format(max_dim)))]
     return ret
@@ -87,16 +90,16 @@ def get_npz_paths(max_dim,styles):
 def generator(paths):
     def _generator():
         for p in paths:
-            yield np.load(p)
+            yield np.load(p) /255
     return _generator
 
-def get_loader(max_dim,styles,limit,batch_size):
-    paths=get_npz_paths(max_dim,styles)
+def get_loader(max_dim,styles,limit,root):
+    paths=get_npz_paths(max_dim,styles,root)
     shuffle(paths)
     paths=paths[:limit]
     gen=generator(paths)
     image_size=(max_dim,max_dim,3)
-    return tf.data.Dataset.from_generator(gen,output_signature=(tf.TensorSpec(shape=image_size))).batch(batch_size,drop_remainder=True).shuffle(10,reshuffle_each_iteration=False)
+    return tf.data.Dataset.from_generator(gen,output_signature=(tf.TensorSpec(shape=image_size)))
 
     
 
@@ -107,3 +110,4 @@ if __name__ == "__main__":
     styles=[s for s in set(sys.argv).intersection(set(all_styles))]
     for m in [64,128,256]:
         styles_to_npz(m,styles)
+        styles_to_npz(m,all_digits,mnist_npz_root)

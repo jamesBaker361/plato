@@ -8,19 +8,48 @@ import time
 import datetime
 import random
 
-batch_size = 32
+import argparse
 
-optimizer = tf.keras.optimizers.Adam(1e-4)
+parser = argparse.ArgumentParser(description='get some args')
 
-max_dim=256
+parser.add_argument("--name",type=str,default="name")
 
-image_size=(max_dim,max_dim,3)
+for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity"],[16,64,10,2,100]):
+    parser.add_argument("--{}".format(names),type=int,default=default)
+
+args = parser.parse_args()
+
+
+
+num_examples_to_generate = 16
+
+optimizer = tf.keras.optimizers.Adam(0.00001,clipnorm=1.0)
+
+image_size=(args.max_dim,args.max_dim,3)
 
 current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-train_log_dir = 'logs/gradient_tape/' + current_time + '/train'
-test_log_dir = 'logs/gradient_tape/' + current_time + '/test'
+args.name+=current_time
+
+os.makedirs(gen_img_dir+"/"+args.name)
+
+train_log_dir = 'logs/gradient_tape/' + args.name + '/train'
+test_log_dir = 'logs/gradient_tape/' + args.name + '/test'
+logpx_z_log_dir='logs/gradient_tape/' + args.name + '/logpx_z'
+logpz_log_dir='logs/gradient_tape/' + args.name + '/logpz'
+logqz_x_log_dir='logs/gradient_tape/' + args.name + '/logqz_x'
+
 train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 test_summary_writer = tf.summary.create_file_writer(test_log_dir)
+
+writers={}
+metrics={}
+for name,log_dir in zip(["logpx_z","logpz","logqz_x"],[logpx_z_log_dir,logpz_log_dir,logqz_x_log_dir]):
+    writers[name]=tf.summary.create_file_writer(log_dir)
+    metrics[name]=tf.keras.metrics.Mean(name,dtype=tf.float32)
+
+px_z_summary_writer=tf.summary.create_file_writer(logpx_z_log_dir)
+pz_summary_writer=tf.summary.create_file_writer(logpz_log_dir)
+qz_x_summary_writer=tf.summary.create_file_writer(logqz_x_log_dir)
 
 train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
 test_loss = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
@@ -33,15 +62,21 @@ def log_normal_pdf(sample, mean, logvar, raxis=1):
             axis=raxis)
 
 
-def compute_loss(model, x):
+def compute_loss(model, x,test=False):
     mean, logvar = model.encode(x)
     z = model.reparameterize(mean, logvar)
     x_logit = model.decode(z)
-    cross_ent = tf.nn.sigmoid_cross_entropy_with_logits(logits=x_logit, labels=x)
+    #cross_ent = tf.nn.sigmoid_cross_entropy_with_logits(logits=x_logit, labels=x)
+    cross_ent=(x-x_logit)**2
     logpx_z = -tf.reduce_sum(cross_ent, axis=[1, 2, 3])
     logpz = log_normal_pdf(z, 0., 0.)
     logqz_x = log_normal_pdf(z, mean, logvar)
     #return tf.random.uniform(shape=[], minval=5, maxval=10, dtype=tf.float32)
+    if test:
+        for name,variable in zip(["logpx_z","logpz","logqz_x"],[-logpx_z,-logpz,logqz_x]):
+            #with writers[name].as_default():
+            metrics[name](tf.reduce_mean(variable))
+            #tf.summary.scalar('loss', metrics[name].result(), step=epoch)
     return -tf.reduce_mean(logpx_z + logpz - logqz_x)
 
 
@@ -58,16 +93,11 @@ def train_step(model, x, optimizer):
     optimizer.apply_gradients(zip(gradients, model.trainable_variables))
     train_loss(loss)
 
-epochs = 10
-# set the dimensionality of the latent space to a plane for visualization later
-latent_dim = 64
-num_examples_to_generate = 16
-
 # keeping the random vector constant for generation (prediction) so
 # it will be easier to see the improvement.
 random_vector_for_generation = tf.random.normal(
-        shape=[num_examples_to_generate, latent_dim])
-model = CVAE(latent_dim,max_dim)
+        shape=[num_examples_to_generate, args.latent_dim])
+model = CVAE(args.latent_dim,args.max_dim)
 
 def generate_and_save_images(model, epoch, test_sample):
     mean, logvar = model.encode(test_sample)
@@ -81,36 +111,44 @@ def generate_and_save_images(model, epoch, test_sample):
         plt.axis('off')
 
     # tight_layout minimizes the overlap between 2 sub-plots
-    plt.savefig('{}/image_at_epoch_{:04d}.png'.format(gen_img_dir,epoch))
+    plt.savefig('{}/{}/image_at_epoch_{:04d}.png'.format(gen_img_dir,args.name,epoch))
     plt.show()
 
-loader=get_loader(["portrait"],100,batch_size)
+loader=get_loader(args.max_dim,["0"],args.quantity,mnist_npz_root)
 
-test_dataset = loader.enumerate().filter(lambda x,y: x % 4 == 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False)
+test_dataset = loader.enumerate().filter(lambda x,y: x % 4 == 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(args.batch_size,drop_remainder=True)
 
-train_dataset = loader.enumerate().filter(lambda x,y: x % 4 != 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False)
+train_dataset = loader.enumerate().filter(lambda x,y: x % 4 != 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(args.batch_size,drop_remainder=True)
 
 # Pick a sample of the test set for generating output images
-assert batch_size >= num_examples_to_generate
+assert args.batch_size >= num_examples_to_generate
 for test_batch in test_dataset.take(1):
     test_sample = test_batch[0:num_examples_to_generate, :, :, :]
+    break
 
 generate_and_save_images(model, 0, test_sample)
 
-for epoch in range(1, epochs + 1):
+for epoch in range(1, args.epochs + 1):
     start_time = time.time()
     for train_x in train_dataset:
         train_step(model, train_x, optimizer)
     end_time = time.time()
-    tf.summary.scalar('loss', train_loss.result(), step=epoch)
+    with train_summary_writer.as_default():
+        tf.summary.scalar('loss', train_loss.result(), step=epoch)
 
 
 
     for test_x in test_dataset:
-        test_loss(compute_loss(model, test_x))
+        test_loss(compute_loss(model, test_x,True))
     elbo = -test_loss.result()
 
-    tf.summary.scalar('loss', test_loss.result(), step=epoch)
+    with test_summary_writer.as_default():
+        tf.summary.scalar('loss', test_loss.result(), step=epoch)
+
+    for name in ["logpx_z","logpz","logqz_x"]:
+        with writers[name].as_default():
+            tf.summary.scalar('loss', metrics[name].result(), step=epoch)
+            metrics[name].reset_states()
 
     display.clear_output(wait=False)
     print('Epoch: {}, Test set ELBO: {}, time elapse for current epoch: {}'

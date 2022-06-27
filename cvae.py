@@ -1,36 +1,41 @@
 import tensorflow as tf
 from numpy import log2
+
+normal_init=tf.keras.initializers.RandomNormal(mean=0., stddev=0.01)
+
 class CVAE(tf.keras.Model):
     """Convolutional variational autoencoder."""
 
     def __init__(self, latent_dim,max_dim):
         super(CVAE, self).__init__()
         self.latent_dim = latent_dim
+        encoder_filters=[min(2** (i+5),512) for i in range(int(log2(max_dim))-1)]
         self.encoder = tf.keras.Sequential(
                 [
                         tf.keras.layers.InputLayer(input_shape=(max_dim, max_dim, 3)),
-                        tf.keras.layers.Conv2D(
-                                filters=32, kernel_size=3, strides=(2, 2), activation='relu'),
-                        tf.keras.layers.Conv2D(
-                                filters=64, kernel_size=3, strides=(2, 2), activation='relu'),
+                        *[tf.keras.layers.Conv2D(
+                                filters=f, kernel_size=5, strides=2, padding='same',
+                                activation='relu') for f in encoder_filters]
+                        ,
                         tf.keras.layers.Flatten(),
                         # No activation
                         tf.keras.layers.Dense(latent_dim + latent_dim),
                 ]
         )
 
+        decoder_filters=encoder_filters[::-1]
         self.decoder = tf.keras.Sequential(
                 [
                         tf.keras.layers.InputLayer(input_shape=(latent_dim,)),
-                        tf.keras.layers.Dense(units=8*8*32, activation=tf.nn.relu),
-                        tf.keras.layers.Reshape(target_shape=(8, 8, 32)),
+                        tf.keras.layers.Dense(units=4*decoder_filters[0], activation=tf.nn.relu),
+                        tf.keras.layers.Reshape(target_shape=(2, 2, decoder_filters[0])),
                         *[tf.keras.layers.Conv2DTranspose(
-                                filters=64, kernel_size=5, strides=2, padding='same',
-                                activation='relu') for _ in range(int(log2(max_dim))-4)]
+                                filters=f, kernel_size=5, strides=2, padding='same',
+                                activation='relu') for f in decoder_filters]
                         ,
                         # No activation
                         tf.keras.layers.Conv2DTranspose(
-                                filters=3, kernel_size=3, strides=1, padding='same'),
+                                filters=3, kernel_size=3, strides=1, padding='same',activation="sigmoid"),
                 ]
         )
 
@@ -56,4 +61,6 @@ class CVAE(tf.keras.Model):
         return logits
 
 if __name__ =="__main__":
-    model=CVAE(64,32)
+    model=CVAE(128,64)
+    #model(tf.random.uniform((1,64,64,3)))
+    model.encoder.summary()
