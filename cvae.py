@@ -35,7 +35,7 @@ class CVAE(tf.keras.Model):
                         ,
                         # No activation
                         tf.keras.layers.Conv2DTranspose(
-                                filters=3, kernel_size=3, strides=1, padding='same',activation="sigmoid"),
+                                filters=3, kernel_size=3, strides=1, padding='same'),
                 ]
         )
 
