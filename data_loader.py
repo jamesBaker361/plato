@@ -41,20 +41,15 @@ def load_img(path_to_img, max_dim=256):
     '''
     img = tf.io.read_file(path_to_img)
     img = tf.image.decode_image(img, channels=3)
+    if len(img.shape)==4:
+        img=img[0]
     #img = tf.image.convert_image_dtype(img, tf.float32)
 
-    shape = tf.cast(tf.shape(img)[:-1], tf.float32)
-    long_dim = min(shape)
-    scale = max_dim / long_dim
-
-    new_shape = tf.cast(1+(shape * scale), tf.int32)
-    print(new_shape)
-
-    img = tf.image.resize(img, new_shape,method='bilinear')
-    img=tf.image.random_crop(img,size=(max_dim,max_dim,3))
+    img = tf.image.resize_with_pad(img, max_dim,max_dim)
+    #img=tf.image.random_crop(img,size=(max_dim,max_dim,3))
     return img
 
-def styles_to_npz(max_dim,styles=all_styles,root=npz_root):
+def styles_to_npz(max_dim,styles=all_styles,root=npz_root,root_img_dir=img_dir):
     '''> It takes a list of styles, gets the paths to all the images in those styles, and then saves the
     images as numpy arrays in a folder named after the style
     
@@ -64,10 +59,7 @@ def styles_to_npz(max_dim,styles=all_styles,root=npz_root):
         a list of styles to convert.
     
     '''
-    if root==npz_root:
-        paths=get_img_paths(styles)
-    else:
-        paths=get_img_paths(styles,mnist_dir)
+    paths=get_img_paths(styles,root_img_dir)
     for (src,style,jpg) in paths:
         name=jpg[:jpg.find(".")]
         new_np="{}/{}/{}.{}.npy".format(root,style,name,max_dim)
@@ -107,7 +99,9 @@ def get_loader(max_dim,styles,limit,root):
 
 
 if __name__ == "__main__":
-    styles=[s for s in set(sys.argv).intersection(set(all_styles))]
+    #styles=[s for s in set(sys.argv).intersection(set(all_styles))]
+    styles=all_styles_faces
     for m in [64,128,256]:
-        styles_to_npz(m,styles)
-        styles_to_npz(m,all_digits,mnist_npz_root)
+        styles_to_npz(m,all_styles_faces,faces_npz_dir,faces_dir)
+        #styles_to_npz(m,styles)
+        #styles_to_npz(m,all_digits,mnist_npz_root)

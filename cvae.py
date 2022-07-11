@@ -6,8 +6,8 @@ normal_init=tf.keras.initializers.RandomNormal(mean=0., stddev=0.01)
 class CVAE(tf.keras.Model):
     """Convolutional variational autoencoder."""
 
-    def __init__(self, latent_dim,max_dim):
-        super(CVAE, self).__init__()
+    def __init__(self, latent_dim,max_dim,*args,**kwargs):
+        super(CVAE, self).__init__(*args,**kwargs)
         self.latent_dim = latent_dim
         encoder_filters=[min(2** (i+5),512) for i in range(int(log2(max_dim))-1)]
         self.encoder = tf.keras.Sequential(
