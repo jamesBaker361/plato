@@ -15,7 +15,7 @@ parser = argparse.ArgumentParser(description='get some args')
 
 parser.add_argument("--name",type=str,default="name")
 parser.add_argument("--dataset",type=str,default="mnist",help="name of dataset (mnist or art or faces)")
-parser.add_argument("--genres",nargs='+',type=str,default=["0"],help="which digits/artistic genres ")
+parser.add_argument("--genres",nargs='+',type=str,default=[],help="which digits/artistic genres ")
 parser.add_argument("--diversity",type=bool,default=False,help="whether to use unconditional diversity loss")
 parser.add_argument("--lambd",type=float,default=0.1,help="coefficient on diversity term")
 parser.add_argument("--vgg_style",type=bool,default=False,help="whether to use vgg style reconstruction loss too")
@@ -28,7 +28,14 @@ for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity
 
 args = parser.parse_args()
 
+dataset_default_all_styles={
+    "faces": all_styles_faces,
+    "art": all_styles,
+    "mnist":all_digits
+}
 
+if len(args.genres)==0:
+    args.genres=dataset_default_all_styles[args.dataset]
 
 num_examples_to_generate = 16
 
