@@ -61,16 +61,17 @@ def styles_to_npz(max_dim,styles=all_styles,root=npz_root,root_img_dir=img_dir):
     '''
     paths=get_img_paths(styles,root_img_dir)
     for (src,style,jpg) in paths:
-        name=jpg[:jpg.find(".")]
+        name=jpg[:jpg.rfind(".")]
         new_np="{}/{}/{}.{}.npy".format(root,style,name,max_dim)
         if os.path.exists(new_np):
             continue
         try:
             img=load_img(src,max_dim)
         except:
-            print(name)
+            print("could not load",name)
             continue
         np.save(new_np,img)
+        print("saved",new_np)
 
 def get_npz_paths(max_dim,styles,root=npz_root):
     ret=[]
@@ -100,7 +101,7 @@ def get_loader(max_dim,styles,limit,root):
 
 if __name__ == "__main__":
     #styles=[s for s in set(sys.argv).intersection(set(all_styles))]
-    styles=all_styles_faces
+    #styles=all_styles_faces
     for m in [64,128,256]:
         styles_to_npz(m,all_styles_faces,faces_npz_dir,faces_dir)
         #styles_to_npz(m,styles)
