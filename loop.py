@@ -234,7 +234,7 @@ def generate_and_save_images(model, epoch, test_sample):
 
     for i in range(predictions.shape[0]):
         plt.subplot(4, 4, i + 1)
-        plt.imshow(predictions[i, :, :, 0])
+        plt.imshow(predictions[i])
         plt.axis('off')
 
     # tight_layout minimizes the overlap between 2 sub-plots
