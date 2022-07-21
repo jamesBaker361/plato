@@ -8,6 +8,7 @@ import time
 import datetime
 import random
 from vgg import *
+from optimizer_config import get_optimizer
 
 import argparse
 
@@ -22,6 +23,17 @@ parser.add_argument("--vgg_style",type=bool,default=False,help="whether to use v
 parser.add_argument("--blocks",nargs='+',type=str,default=["block1_conv1"],help="blocks for vgg extractor")
 parser.add_argument("--vgg_lambda",type=float,default=0.1,help="coefficient on vgg style loss")
 parser.add_argument("--logdir",type=str,default='logs/gradient_tape/')
+parser.add_argument("--opt_type",type=str,default="vanilla",help="whether to use normal lr (vanilla) decay cyclical or superconvergence")
+parser.add_argument("--init_lr",type=float,default=0.00001,help="init lr for cyclical learning rate, decaying learning rate")
+parser.add_argument("--max_lr",type=float,default=0.001,help="max lr for cyclical learning rate")
+parser.add_argument("--min_mom",type=str,default=0.85, help="minimum momentum")
+parser.add_argument("--max_mom",type=float,default=0.95,help="maximum momentum")
+parser.add_argument("--phase_one_pct",type=float,default=0.4,help="what percent of cycle shold be the first phase for super convergence")
+parser.add_argument("--decay_rate",type=float,default=0.9,help="decay rate for decaying LR")
+parser.add_argument("--cycle_steps",type=int,default=1000,help="how many steps before decaying LR, or one cycle of LR decay and reverse decay")
+parser.add_argument("--opt_name",type=str,default='adam',help="which optimizer to use, adam or sgd or rms")
+parser.add_argument("--clipnorm",type=float,default=1.0,help="max gradient norm")
+
 
 for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,100,4,4]):
     parser.add_argument("--{}".format(names),type=int,default=default)
@@ -109,7 +121,18 @@ random_vector_for_generation = tf.random.normal(
 
 with strategy.scope():
     model = CVAE(args.latent_dim,args.max_dim)
-    optimizer = tf.keras.optimizers.Adam(0.00001,clipnorm=1.0)
+    optimizer=get_optimizer(
+        args.opt_name,
+        args.opt_type,
+        args.init_lr,
+        args.max_lr,
+        args.min_mom,
+        args.max_mom,
+        args.decay_rate,
+        args.cycle_steps,
+        args.phase_one_pct,
+        args.clipnorm)
+    #optimizer = tf.keras.optimizers.Adam(0.00001,clipnorm=1.0)
     if args.vgg_style:
         style_extractor=vgg_layers(args.blocks,image_size)
 
@@ -226,10 +249,10 @@ def distributed_vgg_style_step(x):
     return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
                          axis=None)
 
-def generate_and_save_images(model, epoch, test_sample):
+def generate_and_save_images(model, epoch, test_sample,apply_sigmoid):
     mean, logvar = model.encode(test_sample)
     z = model.reparameterize(mean, logvar)
-    predictions = model.sample(z)
+    predictions = model.sample(z,apply_sigmoid)
     fig = plt.figure(figsize=(4, 4))
 
     for i in range(predictions.shape[0]):
@@ -241,8 +264,8 @@ def generate_and_save_images(model, epoch, test_sample):
     plt.savefig('{}/{}/image_at_epoch_{:04d}.png'.format(gen_img_dir,args.name,epoch))
     plt.show()
 
-def generate_from_noise(model,epoch,random_vector):
-    predictions = model.sample(random_vector)
+def generate_from_noise(model,epoch,random_vector,apply_sigmoid):
+    predictions = model.sample(random_vector,apply_sigmoid)
     fig = plt.figure(figsize=(4, 4))
 
     for i in range(predictions.shape[0]):
@@ -275,8 +298,8 @@ for test_batch in test_dataset.take(1):
 train_dataset=strategy.experimental_distribute_dataset(train_dataset)
 test_dataset=strategy.experimental_distribute_dataset(test_dataset)
 
-generate_and_save_images(model, 0, test_sample)
-generate_from_noise(model,0,random_vector_for_generation)
+generate_and_save_images(model, 0, test_sample,False)
+generate_from_noise(model,0,random_vector_for_generation,False)
 
 for epoch in range(1, args.epochs + 1):
     start_time = time.time()
@@ -314,8 +337,13 @@ for epoch in range(1, args.epochs + 1):
     display.clear_output(wait=False)
     print('Epoch: {}, Test set ELBO: {}, time elapse for current epoch: {}'
                 .format(epoch, elbo, end_time - start_time))
-    generate_and_save_images(model, epoch, test_sample)
-    generate_from_noise(model,epoch,random_vector_for_generation)
+    if epoch %10==0:
+        if epoch %2==0:
+            generate_and_save_images(model, epoch, test_sample,True)
+            generate_from_noise(model,epoch,random_vector_for_generation,True)
+        else:
+            generate_and_save_images(model, epoch, test_sample,False)
+            generate_from_noise(model,epoch,random_vector_for_generation,False)
 
     train_loss.reset_states()
     test_loss.reset_states()
