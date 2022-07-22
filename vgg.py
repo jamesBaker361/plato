@@ -10,7 +10,7 @@ class VGGPreProcess(Layer):
         return super().build(input_shape)
 
     def call(self,inputs):
-        return tf.keras.applications.vgg19.preprocess_input(inputs)
+        return tf.keras.applications.vgg19.preprocess_input(255*inputs)
 
 class ResnetPreProcess(Layer):
     def __init__(self,*args,**kwargs) -> None:
@@ -20,7 +20,7 @@ class ResnetPreProcess(Layer):
         return super().build(input_shape)
 
     def call(self,inputs):
-        return tf.keras.applications.resnet50.preprocess_input(inputs)
+        return tf.keras.applications.resnet50.preprocess_input(255*inputs)
 
 class Identity(Layer):
     def __init__(self, *args, **kwargs):
@@ -43,6 +43,24 @@ def clone_layer(layer):
 
 def resnet_layers(layer_names,input_shape):
     resnet=tf.keras.applications.resnet50.ResNet50(include_top=False,input_shape=input_shape)
+    resnet.trainable=False
+    inputs=tf.keras.Input(shape=input_shape)
+    identity=Identity(name="identity")
+    preproc=ResnetPreProcess(name="preprocess")
+
+    layers=[inputs,identity,preproc]
+    for layer in resnet.layers[1:]:
+        layers.append(clone_layer(layer))
+
+    #_model= tf.keras.Sequential(layers)
+    #vgg=Concatenate()([inputs,preprocess,vgg])
+    #if name in _model.layer_names else _model.layers[-1].get_layer(name).output
+
+    outputs = [resnet.get_layer(name).output for name in layer_names ]
+
+    return tf.keras.Model(resnet.input, outputs)
+
+
 
 def vgg_layers(layer_names,input_shape):
     vgg = tf.keras.applications.VGG19(include_top=False, weights='imagenet',input_shape=input_shape)
@@ -65,3 +83,12 @@ def vgg_layers(layer_names,input_shape):
     outputs = [_model.get_layer(name).output for name in layer_names ]
 
     return tf.keras.Model(_model.input, outputs)
+
+if __name__ =="__main__":
+    def test_resnet():
+        r_layers=resnet_layers(["conv2_block2_out","conv5_block1_out"],(64,64,3))
+        img=tf.random.normal((1,64,64,3))
+        result=r_layers(img)
+        print([r.shape for r in result])
+
+    test_resnet()
