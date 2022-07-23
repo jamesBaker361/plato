@@ -7,6 +7,7 @@ from data_loader import *
 import time
 import datetime
 import random
+from fid import calculate_fid
 from vgg import *
 from optimizer_config import get_optimizer
 
@@ -33,6 +34,9 @@ parser.add_argument("--decay_rate",type=float,default=0.9,help="decay rate for d
 parser.add_argument("--cycle_steps",type=int,default=1000,help="how many steps before decaying LR, or one cycle of LR decay and reverse decay")
 parser.add_argument("--opt_name",type=str,default='adam',help="which optimizer to use, adam or sgd or rms")
 parser.add_argument("--clipnorm",type=float,default=1.0,help="max gradient norm")
+parser.add_argument("--fid",type=bool,default=False,help="whether to do FID scoring")
+parser.add_argument("--fid_interval",type=int, default=50,help="FID scoring every X intervals")
+parser.add_argument("--fid_sample_size",type=int,default=3000,help="how many images to do each FID scoring")
 
 
 for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,100,4,4]):
@@ -79,6 +83,8 @@ train_log_dir = args.logdir + args.name + '/train'
 test_log_dir = args.logdir + args.name + '/test'
 diversity_log_dir=args.logdir + args.name + '/diversity'
 vgg_log_dir=args.logdir+args.name+"/vgg"
+resnet_log_dir=args.logdir+args.name+"/resnet"
+
 
 
 logpx_z_log_dir=args.logdir + args.name + '/logpx_z'
@@ -89,6 +95,12 @@ train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 test_summary_writer = tf.summary.create_file_writer(test_log_dir)
 diversity_summary_writer=tf.summary.create_file_writer(diversity_log_dir)
 vgg_summary_writer=tf.summary.create_file_writer(vgg_log_dir)
+resnet_summary_writer=tf.summary.create_file_writer(resnet_log_dir)
+
+if args.fid:
+    fid_log_dir=args.logdir+args.name+"/fid"
+    fid_summary_writer=tf.summary.create_file_writer(fid_log_dir)
+    random_vector_fid=tf.random.normal(shape=[num_examples_to_generate, args.latent_dim])
 
 
 
@@ -119,6 +131,7 @@ def log_normal_pdf(sample, mean, logvar, raxis=1):
 random_vector_for_generation = tf.random.normal(
         shape=[num_examples_to_generate, args.latent_dim])
 
+
 with strategy.scope():
     model = CVAE(args.latent_dim,args.max_dim)
     optimizer=get_optimizer(
@@ -146,6 +159,8 @@ with strategy.scope():
     test_loss = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
     diversity_loss=tf.keras.metrics.Mean("diversity_loss",dtype=tf.float32)
     vgg_loss=tf.keras.metrics.Mean("vgg_loss",dtype=tf.float32)
+    resnet_loss=tf.keras.metrics.Mean("resnet_loss",dtype=tf.float32)
+    fid_loss=tf.keras.metrics.Mean("fid_loss",dtype=tf.float32)
 
     def compute_loss(x,test=False):
         mean, logvar = model.encode(x)
@@ -227,6 +242,16 @@ def vgg_style_step(x):
     vgg_loss(loss)
     return loss
 
+def fid_step(model,noise,loader):
+    images1=model.sample(noise,False)
+    for i in loader.batch(args.fid_sample_size):
+        images2=i
+        break
+    loss=calculate_fid(images1,images2,(args.max_dim,args.max_dim,3))
+    #fid_loss(loss)
+    return loss
+
+
 @tf.function
 def distributed_diversity_step(z):
     per_replica_losses = strategy.run(diversity_step, args=(z,))
@@ -301,6 +326,12 @@ test_dataset=strategy.experimental_distribute_dataset(test_dataset)
 generate_and_save_images(model, 0, test_sample,False)
 generate_from_noise(model,0,random_vector_for_generation,False)
 
+if args.fid:
+    fid_score=fid_step(model,random_vector_fid,loader)
+    print("FID score {}".format(fid_score))
+    with fid_summary_writer.as_default():
+        tf.summary.scalar("fid_score",fid_score,step=0)
+
 for epoch in range(1, args.epochs + 1):
     start_time = time.time()
     for train_x in train_dataset:
@@ -312,7 +343,7 @@ for epoch in range(1, args.epochs + 1):
         tf.summary.scalar('loss', train_loss.result(), step=epoch)
     if args.vgg_style:
         with vgg_summary_writer.as_default():
-            tf.summary.scalar('loss',vgg_loss.result(),step=epoch)
+            tf.summary.scalar('vgg_loss',vgg_loss.result(),step=epoch)
 
     if args.diversity:
         for _ in range(args.diversity_batches):
@@ -320,7 +351,7 @@ for epoch in range(1, args.epochs + 1):
             distributed_diversity_step(z)
 
         with diversity_summary_writer.as_default():
-            tf.summary.scalar('loss',diversity_loss.result(),step=epoch)
+            tf.summary.scalar('diversity_loss',diversity_loss.result(),step=epoch)
 
     for test_x in test_dataset:
         distributed_test_step(test_x)
@@ -337,7 +368,7 @@ for epoch in range(1, args.epochs + 1):
     display.clear_output(wait=False)
     print('Epoch: {}, Test set ELBO: {}, time elapse for current epoch: {}'
                 .format(epoch, elbo, end_time - start_time))
-    if epoch %10==0:
+    if epoch %5==0:
         if epoch %2==0:
             generate_and_save_images(model, epoch, test_sample,True)
             generate_from_noise(model,epoch,random_vector_for_generation,True)
@@ -345,7 +376,22 @@ for epoch in range(1, args.epochs + 1):
             generate_and_save_images(model, epoch, test_sample,False)
             generate_from_noise(model,epoch,random_vector_for_generation,False)
 
+    if epoch %args.fid_interval==0 and args.fid:
+        fid_score=fid_step(model,random_vector_fid,loader)
+        print("FID score {}".format(fid_score))
+        with fid_summary_writer.as_default():
+            tf.summary.scalar("fid_score",fid_score,step=epoch)
+
+
     train_loss.reset_states()
     test_loss.reset_states()
     diversity_loss.reset_states()
     vgg_loss.reset_states()
+    fid_loss.reset_states()
+    resnet_loss.reset_states()
+
+if args.fid:
+    fid_score=fid_step(model,random_vector_fid,loader)
+    print("FID score {}".format(fid_score))
+    with fid_summary_writer.as_default():
+        tf.summary.scalar("fid_score",fid_score,step=epoch)

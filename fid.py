@@ -5,6 +5,7 @@ from numpy import iscomplexobj
 from numpy import asarray
 from numpy.random import randint
 from scipy.linalg import sqrtm
+import tensorflow as tf
 from keras.applications.inception_v3 import InceptionV3
 from keras.applications.inception_v3 import preprocess_input
 
@@ -13,6 +14,10 @@ from keras.applications.inception_v3 import preprocess_input
 
 # calculate frechet inception distance
 def calculate_fid(images1, images2, input_shape):
+    if input_shape[0]<128:
+        images1=tf.image.resize_with_pad(images1,128,128,"nearest")
+        images2=tf.image.resize_with_pad(images2,128,128,"nearest")
+        input_shape=(128,128,3)
     model = InceptionV3(include_top=False, pooling='avg', input_shape=input_shape)
     # pre-process images
     images1 = preprocess_input(255*images1)
@@ -38,8 +43,8 @@ if __name__=="__main__":
 
     from data_loader import *
 
-    loader=get_loader(128,["baroque","expressionism"],100,faces_npz_dir).batch(100)
-    loader2=get_loader(128,["baroque","high-renaissance"],100,faces_npz_dir).batch(100)
+    loader=get_loader(64,["baroque","expressionism"],100,faces_npz_dir).batch(100)
+    loader2=get_loader(64,["baroque","high-renaissance"],100,faces_npz_dir).batch(100)
     for i in loader:
         imgs=i
         break
@@ -48,7 +53,7 @@ if __name__=="__main__":
         break
 
     def test_calc():
-        f=calculate_fid(imgs,imgs2,(128,128,3))
+        f=calculate_fid(imgs,imgs2,(64,64,3))
         print(f)
 
     test_calc()
