@@ -20,9 +20,15 @@ parser.add_argument("--dataset",type=str,default="mnist",help="name of dataset (
 parser.add_argument("--genres",nargs='+',type=str,default=[],help="which digits/artistic genres ")
 parser.add_argument("--diversity",type=bool,default=False,help="whether to use unconditional diversity loss")
 parser.add_argument("--lambd",type=float,default=0.1,help="coefficient on diversity term")
+
 parser.add_argument("--vgg_style",type=bool,default=False,help="whether to use vgg style reconstruction loss too")
 parser.add_argument("--blocks",nargs='+',type=str,default=["block1_conv1"],help="blocks for vgg extractor")
 parser.add_argument("--vgg_lambda",type=float,default=0.1,help="coefficient on vgg style loss")
+
+parser.add_argument("--resnet",type=bool,default=False,help="whether to use resnet reconstruction loss too")
+parser.add_argument("--resnet_blocks",type=str,nargs='+',default=["conv2_block1_out"],help="which blocks to use for resnet extractor")
+parser.add_argument("--resnet_lambda",type=float,default=0.1,help="coefficient on resnet style loss")
+
 parser.add_argument("--logdir",type=str,default='logs/gradient_tape/')
 parser.add_argument("--opt_type",type=str,default="vanilla",help="whether to use normal lr (vanilla) decay cyclical or superconvergence")
 parser.add_argument("--init_lr",type=float,default=0.00001,help="init lr for cyclical learning rate, decaying learning rate")
@@ -39,7 +45,7 @@ parser.add_argument("--fid_interval",type=int, default=50,help="FID scoring ever
 parser.add_argument("--fid_sample_size",type=int,default=3000,help="how many images to do each FID scoring")
 
 
-for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,100,4,4]):
+for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,1000,4,8]):
     parser.add_argument("--{}".format(names),type=int,default=default)
 
 args = parser.parse_args()
@@ -147,7 +153,10 @@ with strategy.scope():
         args.clipnorm)
     #optimizer = tf.keras.optimizers.Adam(0.00001,clipnorm=1.0)
     if args.vgg_style:
-        style_extractor=vgg_layers(args.blocks,image_size)
+        vgg_style_extractor=vgg_layers(args.blocks,image_size)
+
+    if args.resnet:
+        resnet_style_extractor=resnet_layers(args.resnet_blocks,image_size)
 
     '''for name in scalar_names:
         dirs[name]=args.logdir + args.name + '/'+name
@@ -196,15 +205,21 @@ with strategy.scope():
         loss=[-_loss*args.lambd]
         return tf.nn.compute_average_loss(loss, global_batch_size=global_batch_size)
 
-    def compute_vgg_style_loss(x):
+    def compute_style_loss(x,extractor,extractor_lambda):
         mean, logvar = model.encode(x)
         z = model.reparameterize(mean, logvar)
         x_logit = model.decode(z)
-        x_style=style_extractor(x)
-        x_logit_style=style_extractor(x_logit)
+        x_style=extractor(x)
+        x_logit_style=extractor(x_logit)
         cross_ent=(x_style-x_logit_style)**2
-        reconst=tf.reduce_sum(args.vgg_lambda * cross_ent,axis=[1,2,3])
+        reconst=tf.reduce_sum(extractor_lambda * cross_ent,axis=[1,2,3])
         return tf.nn.compute_average_loss(reconst,global_batch_size=global_batch_size)
+
+    def compute_vgg_style_loss(x):
+        return compute_style_loss(x,vgg_style_extractor,args.vgg_lambda)
+
+    def compute_resnet_style_loss(x):
+        return compute_style_loss(x,resnet_style_extractor,args.resnet_lambda)
 #end strategy scope
 
 def train_step(x):
@@ -242,9 +257,17 @@ def vgg_style_step(x):
     vgg_loss(loss)
     return loss
 
+def resnet_style_step(x):
+    with tf.GradientTape() as tape:
+        loss=compute_resnet_style_loss(x)
+    gradients = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    resnet_loss(loss)
+    return loss
+
 def fid_step(model,noise,loader):
     images1=model.sample(noise,False)
-    for i in loader.batch(args.fid_sample_size):
+    for i in loader.shuffle(1000,reshuffle_each_iteration=True).batch(args.fid_sample_size):
         images2=i
         break
     loss=calculate_fid(images1,images2,(args.max_dim,args.max_dim,3))
@@ -271,6 +294,12 @@ def distributed_test_step(x):
 @tf.function
 def distributed_vgg_style_step(x):
     per_replica_losses = strategy.run(vgg_style_step, args=(x,))
+    return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
+                         axis=None)
+
+@tf.function
+def distributed_resnet_style_step(x):
+    per_replica_losses = strategy.run(resnet_style_step, args=(x,))
     return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
                          axis=None)
 
@@ -338,12 +367,18 @@ for epoch in range(1, args.epochs + 1):
         distributed_train_step(train_x)
         if args.vgg_style:
             distributed_vgg_style_step(train_x)
+        if args.resnet:
+            distributed_resnet_style_step(train_x)
     end_time = time.time()
     with train_summary_writer.as_default():
         tf.summary.scalar('loss', train_loss.result(), step=epoch)
     if args.vgg_style:
         with vgg_summary_writer.as_default():
             tf.summary.scalar('vgg_loss',vgg_loss.result(),step=epoch)
+    
+    if args.resnet:
+        with resnet_summary_writer.as_default():
+            tf.summary.scalar('resnet_loss',resnet_loss.result(),step=epoch)
 
     if args.diversity:
         for _ in range(args.diversity_batches):
