@@ -74,6 +74,24 @@ def styles_to_npz(max_dim,styles=all_styles,root=npz_root,root_img_dir=img_dir):
         print("saved",new_np)
 
 def get_npz_paths(max_dim,styles,root=npz_root):
+    '''It takes a list of styles and a maximum dimension, and returns a list of paths to the npz files for
+    those styles
+    
+    Parameters
+    ----------
+    max_dim
+        the maximum dimension of the image. The images are square, so this is the length of the longest
+    side.
+    styles
+        a list of the styles you want to use.
+    root
+        the root directory of the npz files
+    
+    Returns
+    -------
+        A list of paths to the numpy files.
+    
+    '''
     ret=[]
     all_styles_npz=[root+"/"+s for s in styles]
     for dir,style in zip(all_styles_npz,styles):
@@ -81,6 +99,19 @@ def get_npz_paths(max_dim,styles,root=npz_root):
     return ret
 
 def generator(paths):
+    '''It takes a list of paths to numpy arrays, and returns a function that loads those arrays and divides
+    them by 255
+    
+    Parameters
+    ----------
+    paths
+        a list of paths to the numpy arrays
+    
+    Returns
+    -------
+        A function that takes no arguments and returns a generator that yields the normalized numpy arrays.
+    
+    '''
     def _generator():
         for p in paths:
             yield np.load(p) /255

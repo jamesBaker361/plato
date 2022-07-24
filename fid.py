@@ -14,6 +14,23 @@ from keras.applications.inception_v3 import preprocess_input
 
 # calculate frechet inception distance
 def calculate_fid(images1, images2, input_shape):
+    '''It takes two sets of images, calculates the activations of the InceptionV3 model for each set, and
+    then calculates the FID score between the two sets
+    
+    Parameters
+    ----------
+    images1
+        a numpy array of images
+    images2
+        the images you want to compare to
+    input_shape
+        the shape of the images in the dataset.
+    
+    Returns
+    -------
+        The FID score
+    
+    '''
     if input_shape[0]<128:
         images1=tf.image.resize_with_pad(images1,128,128,"nearest")
         images2=tf.image.resize_with_pad(images2,128,128,"nearest")

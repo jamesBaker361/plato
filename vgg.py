@@ -33,6 +33,18 @@ class Identity(Layer):
         return inputs
 
 def clone_layer(layer):
+    '''It takes a layer and returns a copy of that layer
+    
+    Parameters
+    ----------
+    layer
+        The layer to be cloned
+    
+    Returns
+    -------
+        A cloned layer with the same weights and configuration as the original layer.
+    
+    '''
     config = layer.get_config()
     weights = layer.get_weights()
     cloned_layer = type(layer).from_config(config)
@@ -42,6 +54,20 @@ def clone_layer(layer):
     return cloned_layer
 
 def resnet_layers(layer_names,input_shape):
+    '''> We take a ResNet50 model, remove the top layers, and then clone the remaining layers
+    
+    Parameters
+    ----------
+    layer_names
+        a list of strings, each of which is the name of a layer in the ResNet50 model.
+    input_shape
+        The shape of the input image.
+    
+    Returns
+    -------
+        A model with the input and output layers specified.
+    
+    '''
     resnet=tf.keras.applications.resnet50.ResNet50(include_top=False,input_shape=input_shape)
     resnet.trainable=False
     inputs=tf.keras.Input(shape=input_shape)
@@ -52,33 +78,44 @@ def resnet_layers(layer_names,input_shape):
     for layer in resnet.layers[1:]:
         layers.append(clone_layer(layer))
 
-    #_model= tf.keras.Sequential(layers)
-    #vgg=Concatenate()([inputs,preprocess,vgg])
-    #if name in _model.layer_names else _model.layers[-1].get_layer(name).output
-
     outputs = [resnet.get_layer(name).output for name in layer_names ]
 
-    return tf.keras.Model(resnet.input, outputs)
+    res= tf.keras.Model(resnet.input, outputs)
+    x=identity(inputs)
+    x=preproc(x)
+    x=res(x)
+
+    return tf.keras.Model(inputs,x)
 
 
 
 def vgg_layers(layer_names,input_shape):
+    '''> It takes a list of layer names and an input shape, and returns a model that outputs the
+    activations of those layers
+    
+    Parameters
+    ----------
+    layer_names
+        The names of the layers we want to extract from the VGG19 model.
+    input_shape
+        The shape of the input image.
+    
+    Returns
+    -------
+        A model with the input and output layers specified.
+    
+    '''
     vgg = tf.keras.applications.VGG19(include_top=False, weights='imagenet',input_shape=input_shape)
     vgg.trainable = False
     inputs=tf.keras.Input(shape=input_shape)
     identity=Identity(name="identity")
     preproc=VGGPreProcess(name="prepocess")
-    #x=vgg(x)
-
-    #_model.layer_names=set([no_block,no_block_raw])
 
     layers=[inputs,identity,preproc]
     for layer in vgg.layers[1:]:
         layers.append(clone_layer(layer))
 
     _model= tf.keras.Sequential(layers)
-    #vgg=Concatenate()([inputs,preprocess,vgg])
-    #if name in _model.layer_names else _model.layers[-1].get_layer(name).output
 
     outputs = [_model.get_layer(name).output for name in layer_names ]
 

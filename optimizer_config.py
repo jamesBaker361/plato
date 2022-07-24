@@ -1,18 +1,51 @@
 import tensorflow as tf
-import tensorflow_addons as tfa
 import numpy as np
 from tensorflow.keras.optimizers import SGD,Adam,RMSprop
 
 #https://www.avanwyk.com/tensorflow-2-super-convergence-with-the-1cycle-policy/
 
 def falling_cos(steps,base=0,amplitude=1):
+    '''It returns a list of numbers that starts at base + 2 * amplitude , goes down to base
+    
+    Parameters
+    ----------
+    steps
+        the number of steps in the cosine wave
+    base, optional
+        the minimum value of the cosine wave
+    amplitude, optional
+        the amplitude of the cosine function
+    
+    Returns
+    -------
+        A list of numbers.
+    
+    '''
     cos= [1+np.cos(s*np.pi/steps) for s in range(steps)]
     return [amplitude*c + base for c in cos]
 
 def rising_cos(steps,base=0,amplitude=1):
+    '''It returns a list of numbers that starts at `base` and rises to `base+2 * amplitude` in `steps` steps,
+    with a cosine-like shape
+    
+    Parameters
+    ----------
+    steps
+        the number of steps in the ramp
+    base, optional
+        the minimum value of the cosine function
+    amplitude, optional
+        the amplitude of the cosine function
+    
+    Returns
+    -------
+        A list of values that are the cosine of the step number times pi divided by the number of steps.
+    
+    '''
     cos= [1-np.cos(s*np.pi/steps) for s in range(steps)]
     return [amplitude*c + base for c in cos]
 
+# It wraps an optimizer and adds a few methods to it
 class OptimizerWrapper:
     def __init__(self,_optimizer):
         self._optimizer=_optimizer
@@ -47,6 +80,7 @@ class OptimizerWrapper:
         except AttributeError:
             pass # ignore
 
+# It's a wrapper around an optimizer that decays the learning rate every `cycle_steps` steps
 class OptimizerWrapperDecay(OptimizerWrapper):
     def __init__(self,_optimizer,decay_rate,cycle_steps):
         super().__init__(_optimizer)
@@ -60,6 +94,8 @@ class OptimizerWrapperDecay(OptimizerWrapper):
             lr*=self.decay_rate
             self.set_lr(lr)
 
+# > This class is a wrapper around an optimizer that changes the learning rate according to a
+# triangular schedule
 class OptimizerWrapperTriangular(OptimizerWrapper):
     def __init__(self,_optimizer,init_lr,max_lr,cycle_steps):
         super().__init__(_optimizer)
@@ -76,6 +112,8 @@ class OptimizerWrapperTriangular(OptimizerWrapper):
         lr=self.lr_schedule[self.steps % len(self.lr_schedule)]
         self.set_lr(lr)
 
+# > This class is a wrapper for an optimizer that implements a cyclical learning rate and momentum
+# schedule
 class OptimizerWrapperSuper(OptimizerWrapper):
     def __init__(self, _optimizer,init_lr,max_lr,cycle_steps,phase_one_pct,min_mom,max_mom,):
         super().__init__(_optimizer)
@@ -100,6 +138,36 @@ class OptimizerWrapperSuper(OptimizerWrapper):
 
 
 def get_optimizer(opt_name,opt_type,init_lr,max_lr,min_mom,max_mom,decay_rate,cycle_steps,phase_one_pct,clipnorm):
+    '''> It takes in a bunch of parameters and returns an optimizer object
+    
+    Parameters
+    ----------
+    opt_name
+        (adam,rms,sgd)
+    opt_type
+        the type of optimizer to use.
+    init_lr
+        the initial learning rate
+    max_lr
+        maximum learning rate
+    min_mom
+        minimum momentum
+    max_mom
+        maximum momentum
+    decay_rate
+        the rate at which the learning rate decays
+    cycle_steps
+        number of steps in a cycle
+    phase_one_pct
+        The percentage of the cycle that is phase one.
+    clipnorm
+        the maximum gradient norm to clip to
+
+    Returns
+    -------
+        OptimizerWrapper object
+    
+    '''
     if opt_name in set(['adam','Adam','ADAM']):
         _opt=Adam(init_lr,clipnorm=clipnorm)
     elif opt_name in set(['rms','RMS','Rms']):
