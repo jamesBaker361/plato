@@ -2,9 +2,7 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 from string_globals import *
 import tensorflow as tf
-import sys
 import numpy as np
-import pandas as pd
 from random import shuffle
 
 def get_img_paths(styles,img_dir=img_dir):
@@ -98,6 +96,35 @@ def get_npz_paths(max_dim,styles,root=npz_root):
         ret+=[dir+"/"+image for image in os.listdir(dir) if image.endswith(('{}.npy'.format(max_dim)))]
     return ret
 
+def get_npz_paths_labels(max_dim,styles,root=npz_root):
+    '''> It takes a list of styles and a maximum dimension, and returns a list of tuples of the form
+    (path,style) for all the images in the styles list
+    
+    Parameters
+    ----------
+    max_dim
+        the maximum dimension of the image. The images are square, so this is the height and width.
+    styles
+        a list of the styles you want to train on.
+    root
+        the root directory of the npz files
+    
+    Returns
+    -------
+        A list of tuples, where each tuple is a path to an image and the style of that image.
+    
+    '''
+    ret=[]
+    all_styles_npz=[root+"/"+s for s in styles]
+    for dir,style in zip(all_styles_npz,styles):
+        ret+=[(dir+"/"+image,style )for image in os.listdir(dir) if image.endswith(('{}.npy'.format(max_dim)))]
+    return ret
+
+
+def generator_labels():
+    pass
+
+
 def generator(paths):
     '''It takes a list of paths to numpy arrays, and returns a function that loads those arrays and divides
     them by 255
@@ -118,6 +145,24 @@ def generator(paths):
     return _generator
 
 def get_loader(max_dim,styles,limit,root):
+    '''It returns a tensorflow dataset that generates images from the npz files in the specified directory
+    
+    Parameters
+    ----------
+    max_dim
+        the maximum dimension of the image.
+    styles
+        a list of strings, each string is a style name.
+    limit
+        the number of images to load
+    root
+        the root directory of the dataset
+    
+    Returns
+    -------
+        A dataset of images of size (max_dim,max_dim,3)
+    
+    '''
     paths=get_npz_paths(max_dim,styles,root)
     shuffle(paths)
     paths=paths[:limit]

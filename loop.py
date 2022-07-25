@@ -32,7 +32,7 @@ parser.add_argument("--resnet_lambda",type=float,default=0.1,help="coefficient o
 parser.add_argument("--logdir",type=str,default='logs/gradient_tape/')
 parser.add_argument("--opt_type",type=str,default="vanilla",help="whether to use normal lr (vanilla) decay cyclical or superconvergence")
 parser.add_argument("--init_lr",type=float,default=0.00001,help="init lr for cyclical learning rate, decaying learning rate")
-parser.add_argument("--max_lr",type=float,default=0.001,help="max lr for cyclical learning rate")
+parser.add_argument("--max_lr",type=float,default=0.01,help="max lr for cyclical learning rate")
 parser.add_argument("--min_mom",type=float,default=0.85, help="minimum momentum")
 parser.add_argument("--max_mom",type=float,default=0.95,help="maximum momentum")
 parser.add_argument("--phase_one_pct",type=float,default=0.4,help="what percent of cycle shold be the first phase for super convergence")
@@ -40,6 +40,7 @@ parser.add_argument("--decay_rate",type=float,default=0.9,help="decay rate for d
 parser.add_argument("--cycle_steps",type=int,default=1000,help="how many steps before decaying LR, or one cycle of LR decay and reverse decay")
 parser.add_argument("--opt_name",type=str,default='adam',help="which optimizer to use, adam or sgd or rms")
 parser.add_argument("--clipnorm",type=float,default=1.0,help="max gradient norm")
+
 parser.add_argument("--fid",type=bool,default=False,help="whether to do FID scoring")
 parser.add_argument("--fid_interval",type=int, default=50,help="FID scoring every X intervals")
 parser.add_argument("--fid_sample_size",type=int,default=3000,help="how many images to do each FID scoring")
@@ -371,7 +372,7 @@ for epoch in range(1, args.epochs + 1):
             distributed_resnet_style_step(train_x)
     end_time = time.time()
     with train_summary_writer.as_default():
-        tf.summary.scalar('loss', train_loss.result(), step=epoch)
+        tf.summary.scalar('training_loss', train_loss.result(), step=epoch)
     if args.vgg_style:
         with vgg_summary_writer.as_default():
             tf.summary.scalar('vgg_loss',vgg_loss.result(),step=epoch)
