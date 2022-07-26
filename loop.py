@@ -30,6 +30,7 @@ parser.add_argument("--resnet_blocks",type=str,nargs='+',default=["conv2_block1_
 parser.add_argument("--resnet_lambda",type=float,default=0.1,help="coefficient on resnet style loss")
 
 parser.add_argument("--logdir",type=str,default='logs/gradient_tape/')
+
 parser.add_argument("--opt_type",type=str,default="vanilla",help="whether to use normal lr (vanilla) decay cyclical or superconvergence")
 parser.add_argument("--init_lr",type=float,default=0.00001,help="init lr for cyclical learning rate, decaying learning rate")
 parser.add_argument("--max_lr",type=float,default=0.01,help="max lr for cyclical learning rate")
@@ -45,17 +46,13 @@ parser.add_argument("--fid",type=bool,default=False,help="whether to do FID scor
 parser.add_argument("--fid_interval",type=int, default=50,help="FID scoring every X intervals")
 parser.add_argument("--fid_sample_size",type=int,default=3000,help="how many images to do each FID scoring")
 
+parser.add_argument("--apply_sigmoid",type=bool,default=False,help="whether to apply sigmoid when sampling")
+
 
 for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,1000,4,8]):
     parser.add_argument("--{}".format(names),type=int,default=default)
 
 args = parser.parse_args()
-
-dataset_default_all_styles={
-    "faces": all_styles_faces,
-    "art": all_styles,
-    "mnist":all_digits
-}
 
 if len(args.genres)==0:
     args.genres=dataset_default_all_styles[args.dataset]
@@ -107,7 +104,7 @@ resnet_summary_writer=tf.summary.create_file_writer(resnet_log_dir)
 if args.fid:
     fid_log_dir=args.logdir+args.name+"/fid"
     fid_summary_writer=tf.summary.create_file_writer(fid_log_dir)
-    random_vector_fid=tf.random.normal(shape=[num_examples_to_generate, args.latent_dim])
+    random_vector_fid=tf.random.normal(shape=[args.fid_sample_size, args.latent_dim])
 
 
 
@@ -175,7 +172,7 @@ with strategy.scope():
     def compute_loss(x,test=False):
         mean, logvar = model.encode(x)
         z = model.reparameterize(mean, logvar)
-        x_logit = model.decode(z)
+        x_logit = model.decode(z,args.apply_sigmoid)
         """def kl_loss(mean, log_var):
         kl_loss =  -0.5 * K.sum(1 + log_var - K.square(mean) - K.exp(log_var), axis = 1)
         return kl_loss
@@ -209,7 +206,7 @@ with strategy.scope():
     def compute_style_loss(x,extractor,extractor_lambda):
         mean, logvar = model.encode(x)
         z = model.reparameterize(mean, logvar)
-        x_logit = model.decode(z)
+        x_logit = model.decode(z,args.apply_sigmoid)
         x_style=extractor(x)
         x_logit_style=extractor(x_logit)
         cross_ent=(x_style-x_logit_style)**2
@@ -243,7 +240,7 @@ def test_step(x):
 
 def diversity_step(z):
     with tf.GradientTape() as tape:
-        samples=model.sample(z)
+        samples=model.sample(z,args.apply_sigmoid)
         loss=compute_diversity_loss(samples,z)
     gradients = tape.gradient(loss, model.decoder.trainable_variables)
     optimizer.apply_gradients(zip(gradients, model.decoder.trainable_variables))
@@ -332,12 +329,6 @@ def generate_from_noise(model,epoch,random_vector,apply_sigmoid):
     plt.savefig('{}/{}/gen_image_at_epoch_{:04d}.png'.format(gen_img_dir,args.name,epoch))
     plt.show()
 
-root_dict={
-    "mnist":mnist_npz_root,
-    "art":npz_root,
-    "faces":faces_npz_dir
-}
-
 loader=get_loader(args.max_dim,args.genres,args.quantity,root_dict[args.dataset])
 
 test_dataset = loader.enumerate().filter(lambda x,y: x % args.test_split == 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
@@ -405,12 +396,8 @@ for epoch in range(1, args.epochs + 1):
     print('Epoch: {}, Test set ELBO: {}, time elapse for current epoch: {}'
                 .format(epoch, elbo, end_time - start_time))
     if epoch %5==0:
-        if epoch %2==0:
-            generate_and_save_images(model, epoch, test_sample,True)
-            generate_from_noise(model,epoch,random_vector_for_generation,True)
-        else:
-            generate_and_save_images(model, epoch, test_sample,False)
-            generate_from_noise(model,epoch,random_vector_for_generation,False)
+        generate_and_save_images(model, epoch, test_sample,args.apply_sigmoid)
+        generate_from_noise(model,epoch,random_vector_for_generation,args.apply_sigmoid)
 
     if epoch %args.fid_interval==0 and args.fid:
         fid_score=fid_step(model,random_vector_fid,loader)

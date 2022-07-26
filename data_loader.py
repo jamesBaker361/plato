@@ -4,6 +4,7 @@ from string_globals import *
 import tensorflow as tf
 import numpy as np
 from random import shuffle
+#from sklearn.preprocessing import OneHotEncoder
 
 def get_img_paths(styles,img_dir=img_dir):
     '''It takes a list of styles and returns a list of tuples of the form (image_path,style,image_name)
@@ -121,8 +122,25 @@ def get_npz_paths_labels(max_dim,styles,root=npz_root):
     return ret
 
 
-def generator_labels():
-    pass
+class OneHotEncoder:
+    def __init__(self,categories=None):
+        if categories is not None:
+            self.fit(categories)
+
+    def fit(self,categories):
+        encoding={name:[0.0 for _ in categories] for name in categories}
+        for x,key in enumerate(encoding.keys()):
+            encoding[key][x]=1.0
+        self.encoding=encoding
+
+    def transform(self,datapoint):
+        return self.encoding[datapoint]
+
+def generator_labels(paths,ohencoder):
+    def _generator():
+        for p,style in paths:
+            yield (np.load(p) /255, ohencoder.transform(style))
+    return _generator
 
 
 def generator(paths):
@@ -172,7 +190,15 @@ def get_loader(max_dim,styles,limit,root):
 
     
 
-
+def get_loader_labels(max_dim,styles,limit,root):
+    paths=get_npz_paths_labels(max_dim,styles,root)
+    shuffle(paths)
+    paths=paths[:limit]
+    ohencoder=OneHotEncoder(styles)
+    gen=generator_labels(paths,ohencoder)
+    image_size=(max_dim,max_dim,3)
+    output_sig_shapes=tuple([tf.TensorSpec(shape=image_size),tf.TensorSpec(shape=(len(styles)))])
+    return tf.data.Dataset.from_generator(gen,output_signature=output_sig_shapes)
 
 
 if __name__ == "__main__":

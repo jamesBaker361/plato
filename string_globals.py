@@ -17,6 +17,18 @@ gen_img_dir='./gen_imgs' #generated images
 err_dir="./slurm/err"
 out_dir="./slurm/out"
 
+root_dict={
+    "mnist":mnist_npz_root,
+    "art":npz_root,
+    "faces":faces_npz_dir
+}
+
+dataset_default_all_styles={
+    "faces": all_styles_faces,
+    "art": all_styles,
+    "mnist":all_digits
+}
+
 #raw_image_dir='/scratch/jlb638/images/
 for d in [checkpoint_dir,npz_root,gen_img_dir,err_dir,out_dir,mnist_npz_root,mnist_dir,faces_dir,faces_npz_dir]+all_styles_npz+all_digits_npz+all_styles_faces_npz:
     if not os.path.exists(d):
