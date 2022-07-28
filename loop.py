@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
 from IPython import display
+from classifier import get_discriminator
 from cvae import CVAE
 from data_loader import *
 import time
@@ -47,6 +48,13 @@ parser.add_argument("--fid_interval",type=int, default=50,help="FID scoring ever
 parser.add_argument("--fid_sample_size",type=int,default=3000,help="how many images to do each FID scoring")
 
 parser.add_argument("--apply_sigmoid",type=bool,default=False,help="whether to apply sigmoid when sampling")
+
+parser.add_argument("--gan",type=bool,default=True,help="whether to implement GAN training or not")
+parser.add_argument("--gan_start",type=int,default=0,help="# of epochs after which to start GAN training")
+parser.add_argument("--lambda_gp",type=float, default=10.0,help="lambda on gradient penalty")
+parser.add_argument("--n_critic",type=int, default=2,help="train the discriminator n times more than generator")
+parser.add_argument("--level",type=str,default="B0",help="level of efficient net to use for disciriminator")
+parser.add_argument("--weights",type=str,default=None,help="weights= imagenet or None for discirimnaotor")
 
 
 for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,1000,4,8]):
@@ -106,6 +114,15 @@ if args.fid:
     fid_summary_writer=tf.summary.create_file_writer(fid_log_dir)
     random_vector_fid=tf.random.normal(shape=[args.fid_sample_size, args.latent_dim])
 
+if args.gan:
+    gp_log_dir=args.logdir+args.name+"/gp"
+    disc_log_dir=args.logdir+args.name+"/discriminator_loss"
+    gen_log_dir=args.logdir+args.name+"/generator_loss"
+
+    gp_summary_writer=tf.summary.create_file_writer(gp_log_dir)
+    disc_summary_writer=tf.summary.create_file_writer(disc_log_dir)
+    gen_summary_writer=tf.summary.create_file_writer(gen_log_dir)
+
 
 
 #scalar_names=["logpx_z","logpz","logqz_x","kl","reconst"]
@@ -156,34 +173,23 @@ with strategy.scope():
     if args.resnet:
         resnet_style_extractor=resnet_layers(args.resnet_blocks,image_size)
 
-    '''for name in scalar_names:
-        dirs[name]=args.logdir + args.name + '/'+name
-        writers[name]=tf.summary.create_file_writer(dirs[name])
-        metrics[name]=tf.keras.metrics.Mean(name,dtype=tf.float32)'''
-
-
     train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
     test_loss = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
     diversity_loss=tf.keras.metrics.Mean("diversity_loss",dtype=tf.float32)
     vgg_loss=tf.keras.metrics.Mean("vgg_loss",dtype=tf.float32)
     resnet_loss=tf.keras.metrics.Mean("resnet_loss",dtype=tf.float32)
     fid_loss=tf.keras.metrics.Mean("fid_loss",dtype=tf.float32)
+    gp_loss=tf.keras.metrics.Mean("gp_loss",dtype=tf.float32)
+    disc_loss=tf.keras.metrics.Mean("disc_loss",dtype=tf.float32)
+    gen_loss=tf.keras.metrics.Mean("gen_loss",dtype=tf.float32)
 
-    def compute_loss(x,test=False):
+    def compute_loss(x):
         mean, logvar = model.encode(x)
         z = model.reparameterize(mean, logvar)
         x_logit = model.decode(z,args.apply_sigmoid)
-        """def kl_loss(mean, log_var):
-        kl_loss =  -0.5 * K.sum(1 + log_var - K.square(mean) - K.exp(log_var), axis = 1)
-        return kl_loss
-        """
         cross_ent=(x-x_logit)**2
         reconst = tf.reduce_sum(cross_ent, axis=[1, 2, 3])
         kl=-0.5 * tf.reduce_sum(1+logvar - mean**2 - tf.exp(logvar),axis=1)
-
-        """if test:
-            for name,variable in zip(["reconst","kl"],[reconst,kl]):
-                metrics[name](tf.reduce_mean(variable))"""
 
         per_example_loss= reconst+kl
 
@@ -218,6 +224,33 @@ with strategy.scope():
 
     def compute_resnet_style_loss(x):
         return compute_style_loss(x,resnet_style_extractor,args.resnet_lambda)
+
+    if args.gan:
+        disc=get_discriminator(args.level,(args.max_dim,args.max_dim,3),args.weights)
+        disc_optimizer=get_optimizer(
+        args.opt_name,
+        args.opt_type,
+        args.init_lr,
+        args.max_lr,
+        args.min_mom,
+        args.max_mom,
+        args.decay_rate,
+        args.cycle_steps,
+        args.phase_one_pct,
+        args.clipnorm)
+        def compute_gradient_penalty(real_x,fake_x):
+            alpha=tf.random.uniform((global_batch_size,1,1,1),minval=0.0,maxval=1.0)
+            differences=fake_x-real_x
+            interpolates=real_x+(alpha * differences)
+            gradients=tf.gradients(disc(interpolates),interpolates)[0]
+            slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), axis=[1, 2, 3]))
+            gradient_penalty = [tf.reduce_mean((slopes-1.)**2)]
+            return tf.nn.compute_average_loss(gradient_penalty,global_batch_size=global_batch_size)
+
+        def compute_gan_loss(labels):
+            loss=[tf.reduce_mean(labels)]
+            return tf.nn.compute_average_loss(loss, global_batch_size=global_batch_size)
+
 #end strategy scope
 
 def train_step(x):
@@ -272,6 +305,31 @@ def fid_step(model,noise,loader):
     #fid_loss(loss)
     return loss
 
+if args.gan:
+    def adversarial_step(x,z,gen_training=False):
+        with tf.GradientTape(persistent=True) as gen_tape, tf.GradientTape(persistent=True) as disc_tape:
+            fake_x=model.sample(z,args.apply_sigmoid)
+
+            fake_labels=disc(fake_x)
+            real_labels=disc(x)
+
+            fake_d_loss=compute_gan_loss(fake_labels)
+            real_d_loss=compute_gan_loss(real_labels)
+            gp=compute_gradient_penalty(x,fake_x)
+            g_loss=-fake_d_loss
+            d_loss=fake_d_loss-real_d_loss + (args.lambda_gp*gp)
+        gen_loss(g_loss)
+        disc_loss(d_loss)
+        gp_loss(gp)
+        disc_gradients=disc_tape.gradient(d_loss,disc.trainable_variables)
+        disc_optimizer.apply_gradients(zip(disc_gradients,disc.trainable_variables))
+        if gen_training:
+            gen_gradients=gen_tape.gradient(g_loss,model.decoder.trainable_variables)
+            optimizer.apply_gradients(zip(gen_gradients, model.decoder.trainable_variables))
+        return g_loss,d_loss
+
+    
+
 
 @tf.function
 def distributed_diversity_step(z):
@@ -298,6 +356,12 @@ def distributed_vgg_style_step(x):
 @tf.function
 def distributed_resnet_style_step(x):
     per_replica_losses = strategy.run(resnet_style_step, args=(x,))
+    return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
+                         axis=None)
+
+@tf.function
+def distributed_adversarial_step(x,z,gen_training):
+    per_replica_losses = strategy.run(adversarial_step, args=(x,z,gen_training,))
     return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
                          axis=None)
 
@@ -361,6 +425,10 @@ for epoch in range(1, args.epochs + 1):
             distributed_vgg_style_step(train_x)
         if args.resnet:
             distributed_resnet_style_step(train_x)
+        if args.gan and args.gan_start<=epoch:
+            z=tf.random.uniform((global_batch_size,args.latent_dim))
+            gen_training = (epoch % args.n_critic== True)
+            distributed_adversarial_step(train_x,z,gen_training)
     end_time = time.time()
     with train_summary_writer.as_default():
         tf.summary.scalar('training_loss', train_loss.result(), step=epoch)
@@ -379,6 +447,14 @@ for epoch in range(1, args.epochs + 1):
 
         with diversity_summary_writer.as_default():
             tf.summary.scalar('diversity_loss',diversity_loss.result(),step=epoch)
+
+    if args.gan:
+        with disc_summary_writer.as_default():
+            tf.summary.scalar("disch_loss",disc_loss.result(),step=epoch)
+        with gen_summary_writer.as_default():
+            tf.summary.scalar("gen_loss",gen_loss.result(),step=epoch)
+        with gp_summary_writer.as_default():
+            tf.summary.scalar("gradient_penalty",gp_loss.result(),step=epoch)
 
     for test_x in test_dataset:
         distributed_test_step(test_x)

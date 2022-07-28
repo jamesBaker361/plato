@@ -29,36 +29,60 @@ styles=dataset_default_all_styles[args.dataset]
 
 
 
-def efficient_cfier(model_level,input_shape,styles,weights="imagenet"):
+def efficient_cfier(model_level,input_shape,styles,weights="imagenet",activation=True):
     names_to_models={
-        "B0":tf.keras.applications.EfficientNetB0,
-        "B1":tf.keras.applications.EfficientNetB1,
-        "B2":tf.keras.applications.EfficientNetB2,
-        "B3":tf.keras.applications.EfficientNetB3,
-        "B4":tf.keras.applications.EfficientNetB4,
-        "B5":tf.keras.applications.EfficientNetB5,
-        "B6":tf.keras.applications.EfficientNetB6,
-        "B7":tf.keras.applications.EfficientNetB7
+        "B0":tf.keras.applications.EfficientNetV2B0,
+        "B1":tf.keras.applications.EfficientNetV2B1,
+        "B2":tf.keras.applications.EfficientNetV2B2,
+        "B3":tf.keras.applications.EfficientNetV2B3,
+        "L":tf.keras.applications.EfficientNetV2L,
+        "M":tf.keras.applications.EfficientNetV2M,
+        "S":tf.keras.applications.EfficientNetV2S
     }
 
-    efficient=names_to_models[model_level](include_top=False,weights=weights,input_shape=input_shape)
+    efficient=names_to_models[model_level](include_top=False,weights=weights,input_shape=input_shape,include_preprocessing=False)
 
-    return tf.keras.Sequential([
+    model= tf.keras.Sequential([
+        tf.keras.layers.Rescaling(2.0,offset=-1), #scales [0-1] images to [-1,1] images
         efficient,
         tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(len(styles),activation=tf.nn.softmax)
+        tf.keras.layers.Dense(len(styles))
     ])
 
-def discriminator(model_level,input_shape,weights):
-    return efficient_cfier(model_level,input_shape,[True],weights)
+    if activation:
+        model.add(tf.keras.layers.Softmax())
+
+    return model
+
+def get_discriminator(model_level,input_shape,weights):
+    '''It takes a model level, an input shape, a source of weights (None or imagenet).
+    Since we're doing WGAN-GP, the discriminator has a linear activation function
+    
+    Parameters
+    ----------
+    model_level
+        the level of the model, 
+    input_shape
+        the shape of the input image
+    weights
+        where to get weights from
+    
+    Returns
+    -------
+        A model
+    
+    '''
+    return efficient_cfier(model_level,input_shape,["_"],weights,activation=False)
 
 if __name__=="__main__":
 
     train_log_dir = args.logdir + format_classifier_name() + '/train'
     test_log_dir = args.logdir + format_classifier_name() + '/test'
+    accuracy_log_dir=args.logdir + format_classifier_name() + '/accuracy'
 
     train_summary_writer = tf.summary.create_file_writer(train_log_dir)
     test_summary_writer = tf.summary.create_file_writer(test_log_dir)
+    accuracy_summary_writer=tf.summary.create_file_writer(accuracy_log_dir)
 
     physical_devices=tf.config.list_physical_devices('GPU')
     for device in physical_devices:
@@ -83,12 +107,14 @@ if __name__=="__main__":
 
     with strategy.scope():
         cfier=efficient_cfier(args.level,(args.max_dim,args.max_dim,3),styles,args.weights)
-        optimizer=tf.keras.optimizers.Adam(0.01)
+        optimizer=tf.keras.optimizers.Adam(0.001,clipnorm=1.0)
 
         train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
         test_loss = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
+        accuracy=tf.keras.metrics.Mean("accuracy",dtype=tf.float32)
 
         categorical_cross_entropy=tf.keras.losses.CategoricalCrossentropy(from_logits=True,reduction=tf.keras.losses.Reduction.NONE)
+        acc_metric=tf.keras.metrics.CategoricalAccuracy()
 
         def classification_loss(labels,predicted_labels):
             loss=categorical_cross_entropy(labels,predicted_labels)
@@ -108,6 +134,8 @@ if __name__=="__main__":
     def test_step(images,labels):
         predicted_labels=cfier(images)
         loss=classification_loss(labels,predicted_labels)
+        acc_metric.update_state(labels,predicted_labels)
+        accuracy(acc_metric.result())
         test_loss(loss)
         return loss
 
@@ -137,10 +165,14 @@ if __name__=="__main__":
         with test_summary_writer.as_default():
             tf.summary.scalar('loss', test_loss.result(), step=epoch)
 
+        with accuracy_summary_writer.as_default():
+            tf.summary.scalar("accuracy",accuracy.result(),step=epoch)
+
         print('Epoch: {}, test loss: {}'.format(epoch,test_loss.result()))
 
         train_loss.reset_states()
         test_loss.reset_states()
+        accuracy.reset_states()
 
     checkpoint_path=checkpoint_dir+"/"+format_classifier_name()
     if args.save:
