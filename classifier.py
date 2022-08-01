@@ -2,10 +2,13 @@ import tensorflow as tf
 from data_loader import get_loader_labels
 from string_globals import *
 import argparse
+from vgg import VGGPreProcess
 
 def efficient_cfier(model_level,input_shape,styles,weights="imagenet",activation=True):
     if model_level=="dc":
         return dc_net(input_shape,styles,activation)
+    elif model_level=="vgg":
+        return vgg_net(input_shape,styles,weights,activation)
     names_to_models={
         "B0":tf.keras.applications.EfficientNetV2B0,
         "B1":tf.keras.applications.EfficientNetV2B1,
@@ -45,7 +48,22 @@ def dc_net(input_shape,styles,activation=True):
         layers.append(tf.keras.layers.Softmax())
     return tf.keras.Sequential(layers)
 
-def get_discriminator(model_level,input_shape,weights):
+def vgg_net(input_shape,styles,weights="imagenet",activation=True):
+    vgg = tf.keras.applications.VGG19(include_top=False, weights=weights,input_shape=input_shape)
+    model=tf.keras.Sequential([
+        tf.keras.layers.InputLayer(input_shape=input_shape),
+        VGGPreProcess(),
+        vgg,
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dense(len(styles))
+    ])
+
+    if activation:
+        model.add(tf.keras.layers.Softmax())
+
+    return model
+
+def get_discriminator(model_level,input_shape,weights,activation=False):
     '''It takes a model level, an input shape, a source of weights (None or imagenet).
     Since we're doing WGAN-GP, the discriminator has a linear activation function
     
@@ -63,9 +81,12 @@ def get_discriminator(model_level,input_shape,weights):
         A model
     
     '''
+    print(model_level)
     if model_level=="dc":
-        return dc_net(input_shape,["_"],activation=False)
-    return efficient_cfier(model_level,input_shape,["_"],weights,activation=False)
+        return dc_net(input_shape,["_"],activation=activation)
+    elif model_level=="vgg":
+        return vgg_net(input_shape,["_"],weights,activation=activation)
+    return efficient_cfier(model_level,input_shape,["_"],weights,activation=activation)
 
 if __name__=="__main__":
 
@@ -83,14 +104,15 @@ if __name__=="__main__":
     parser.add_argument("--batch_size",type=int,default=16,help="batch size for training/loading data")
     parser.add_argument("--max_dim",type=int,default=64,help="dimensions of input image")
     parser.add_argument("--lr",type=float,default=0.01,help="learning rate for optimizer")
+    parser.add_argument("--activation",type=bool,default=False,help="whether to use softmax activation")
     #parser.add_argument("--model_type",type=str,default="efficient",help="")
 
 
 
     args = parser.parse_args()
 
-    def format_classifier_name(dataset=args.dataset,max_dim=args.max_dim,level=args.level,weights=args.weights,lr=args.lr):
-        return '{}-{}-{}-{}-{}'.format(dataset,max_dim,level,weights,lr)
+    def format_classifier_name(dataset=args.dataset,max_dim=args.max_dim,level=args.level,weights=args.weights,lr=args.lr,activation=args.activation):
+        return '{}-{}-{}-{}-{}-{}'.format(dataset,max_dim,level,weights,lr,activation)
 
     styles=dataset_default_all_styles[args.dataset]
 
@@ -124,8 +146,8 @@ if __name__=="__main__":
     train_dataset = loader.enumerate().filter(lambda x,y: x % args.test_split != 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
 
     with strategy.scope():
-        cfier=efficient_cfier(args.level,(args.max_dim,args.max_dim,3),styles,args.weights)
-        optimizer=tf.keras.optimizers.Adam(0.0001)
+        cfier=efficient_cfier(args.level,(args.max_dim,args.max_dim,3),styles,args.weights,args.activation)
+        optimizer=tf.keras.optimizers.Adam(args.lr)
 
         train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
         test_loss = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
