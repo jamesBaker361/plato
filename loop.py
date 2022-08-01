@@ -49,12 +49,13 @@ parser.add_argument("--fid_sample_size",type=int,default=3000,help="how many ima
 
 parser.add_argument("--apply_sigmoid",type=bool,default=False,help="whether to apply sigmoid when sampling")
 
-parser.add_argument("--gan",type=bool,default=True,help="whether to implement GAN training or not")
+parser.add_argument("--gan",type=bool,default=False,help="whether to implement GAN training or not")
 parser.add_argument("--gan_start",type=int,default=0,help="# of epochs after which to start GAN training")
 parser.add_argument("--lambda_gp",type=float, default=10.0,help="lambda on gradient penalty")
-parser.add_argument("--n_critic",type=int, default=2,help="train the discriminator n times more than generator")
-parser.add_argument("--level",type=str,default="B0",help="level of efficient net to use for disciriminator")
+parser.add_argument("--n_critic",type=int, default=5,help="train the discriminator n times more than generator")
+parser.add_argument("--level",type=str,default="dc",help="level of efficient net to use for disciriminator")
 parser.add_argument("--weights",type=str,default=None,help="weights= imagenet or None for discirimnaotor")
+parser.add_argument("--extra_epochs",type=int,default=0,help="whether to train the gan for any epochs after training the vae")
 
 
 for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,1000,4,8]):
@@ -239,7 +240,7 @@ with strategy.scope():
         args.phase_one_pct,
         args.clipnorm)
         def compute_gradient_penalty(real_x,fake_x):
-            alpha=tf.random.uniform((global_batch_size,1,1,1),minval=0.0,maxval=1.0)
+            alpha=tf.random.uniform((args.batch_size,1,1,1),minval=0.0,maxval=1.0)
             differences=fake_x-real_x
             interpolates=real_x+(alpha * differences)
             gradients=tf.gradients(disc(interpolates),interpolates)[0]
@@ -306,7 +307,8 @@ def fid_step(model,noise,loader):
     return loss
 
 if args.gan:
-    def adversarial_step(x,z,gen_training=False):
+    def adversarial_step(x,gen_training=False):
+        z=tf.random.truncated_normal((args.batch_size,args.latent_dim))
         with tf.GradientTape(persistent=True) as gen_tape, tf.GradientTape(persistent=True) as disc_tape:
             fake_x=model.sample(z,args.apply_sigmoid)
 
@@ -360,8 +362,8 @@ def distributed_resnet_style_step(x):
                          axis=None)
 
 @tf.function
-def distributed_adversarial_step(x,z,gen_training):
-    per_replica_losses = strategy.run(adversarial_step, args=(x,z,gen_training,))
+def distributed_adversarial_step(x,gen_training):
+    per_replica_losses = strategy.run(adversarial_step, args=(x,gen_training,))
     return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
                          axis=None)
 
@@ -426,9 +428,8 @@ for epoch in range(1, args.epochs + 1):
         if args.resnet:
             distributed_resnet_style_step(train_x)
         if args.gan and args.gan_start<=epoch:
-            z=tf.random.uniform((global_batch_size,args.latent_dim))
             gen_training = (epoch % args.n_critic== True)
-            distributed_adversarial_step(train_x,z,gen_training)
+            distributed_adversarial_step(train_x,gen_training)
     end_time = time.time()
     with train_summary_writer.as_default():
         tf.summary.scalar('training_loss', train_loss.result(), step=epoch)
@@ -450,11 +451,15 @@ for epoch in range(1, args.epochs + 1):
 
     if args.gan:
         with disc_summary_writer.as_default():
-            tf.summary.scalar("disch_loss",disc_loss.result(),step=epoch)
+            tf.summary.scalar("disc_loss",disc_loss.result(),step=epoch)
         with gen_summary_writer.as_default():
             tf.summary.scalar("gen_loss",gen_loss.result(),step=epoch)
         with gp_summary_writer.as_default():
             tf.summary.scalar("gradient_penalty",gp_loss.result(),step=epoch)
+
+        gp_loss.reset_states()
+        disc_loss.reset_states()
+        gen_loss.reset_states()
 
     for test_x in test_dataset:
         distributed_test_step(test_x)
@@ -494,3 +499,45 @@ if args.fid:
     print("FID score {}".format(fid_score))
     with fid_summary_writer.as_default():
         tf.summary.scalar("fid_score",fid_score,step=epoch)
+    fid_loss.reset_states()
+
+if args.gan and args.extra_epochs>0:
+    for epoch in range(args.epochs+1,1+args.epochs+args.extra_epochs):
+        start_time = time.time()
+        for train_x in train_dataset:
+            #z=tf.random.uniform((global_batch_size,args.latent_dim))
+            gen_training = (epoch % args.n_critic== True)
+            distributed_adversarial_step(train_x,gen_training)
+        end_time = time.time()
+        print('Epoch: {}, disc loss: {}, time elapse for current epoch: {}'
+                .format(epoch, disc_loss.result(), end_time - start_time))
+        with disc_summary_writer.as_default():
+            tf.summary.scalar("disc_loss",disc_loss.result(),step=epoch)
+        with gen_summary_writer.as_default():
+            tf.summary.scalar("gen_loss",gen_loss.result(),step=epoch)
+        with gp_summary_writer.as_default():
+            tf.summary.scalar("gradient_penalty",gp_loss.result(),step=epoch)
+
+        gp_loss.reset_states()
+        disc_loss.reset_states()
+        gen_loss.reset_states()
+
+        if epoch %5==0:
+            generate_and_save_images(model, epoch, test_sample,args.apply_sigmoid)
+            generate_from_noise(model,epoch,random_vector_for_generation,args.apply_sigmoid)
+
+        if epoch %args.fid_interval==0 and args.fid:
+            fid_score=fid_step(model,random_vector_fid,loader)
+            print("FID score {}".format(fid_score))
+            with fid_summary_writer.as_default():
+                tf.summary.scalar("fid_score",fid_score,step=epoch)
+            fid_loss.reset_states()
+
+if args.fid:
+    fid_score=fid_step(model,random_vector_fid,loader)
+    print("FID score {}".format(fid_score))
+    with fid_summary_writer.as_default():
+        tf.summary.scalar("fid_score",fid_score,step=epoch)
+    fid_loss.reset_states()
+
+print("all done!")

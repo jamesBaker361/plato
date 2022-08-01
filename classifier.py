@@ -3,33 +3,9 @@ from data_loader import get_loader_labels
 from string_globals import *
 import argparse
 
-parser = argparse.ArgumentParser(description='get some args')
-
-#parser.add_argument("--name",type=str,default="classifier",help="name for logs")
-parser.add_argument("--dataset",type=str,default="mnist",help="name of dataset (mnist or art or faces)")
-parser.add_argument("--logdir",type=str,default='logs/gradient_tape/')
-parser.add_argument("--quantity",type=int,default=1000,help="quantity of images to use for training")
-parser.add_argument("--test_split",type=int,default=10,help="1/test_split will be for testing")
-parser.add_argument("--weights",type=str,default=None,help="weights= imagenet")
-parser.add_argument("--level",type=str,default="B0",help="level of efficient net to use")
-parser.add_argument("--save",type=bool,default=False, help="whether to save the model or not")
-parser.add_argument("--epochs",type=int,default=10,help="epochs to train for")
-parser.add_argument("--batch_size",type=int,default=16,help="batch size for training/loading data")
-parser.add_argument("--max_dim",type=int,default=64,help="dimensions of input image")
-#parser.add_argument("--model_type",type=str,default="efficient",help="")
-
-
-
-args = parser.parse_args()
-
-def format_classifier_name(dataset=args.dataset,max_dim=args.max_dim,level=args.level,weights=args.weights):
-    return '{}-{}-{}-{}'.format(dataset,max_dim,level,weights)
-
-styles=dataset_default_all_styles[args.dataset]
-
-
-
 def efficient_cfier(model_level,input_shape,styles,weights="imagenet",activation=True):
+    if model_level=="dc":
+        return dc_net(input_shape,styles,activation)
     names_to_models={
         "B0":tf.keras.applications.EfficientNetV2B0,
         "B1":tf.keras.applications.EfficientNetV2B1,
@@ -54,6 +30,21 @@ def efficient_cfier(model_level,input_shape,styles,weights="imagenet",activation
 
     return model
 
+def dc_net(input_shape,styles,activation=True):
+    layers=[tf.keras.layers.InputLayer(input_shape=input_shape)]
+    width=input_shape[0]
+    latent=16
+    while width >2:
+        layers+=[tf.keras.layers.Conv2D(latent,(3,3),(2,2),padding="same"),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.LeakyReLU()]
+        width=width/2
+        latent=latent*2
+    layers+=[tf.keras.layers.Flatten(),tf.keras.layers.Dense(len(styles))]
+    if activation:
+        layers.append(tf.keras.layers.Softmax())
+    return tf.keras.Sequential(layers)
+
 def get_discriminator(model_level,input_shape,weights):
     '''It takes a model level, an input shape, a source of weights (None or imagenet).
     Since we're doing WGAN-GP, the discriminator has a linear activation function
@@ -72,9 +63,36 @@ def get_discriminator(model_level,input_shape,weights):
         A model
     
     '''
+    if model_level=="dc":
+        return dc_net(input_shape,["_"],activation=False)
     return efficient_cfier(model_level,input_shape,["_"],weights,activation=False)
 
 if __name__=="__main__":
+
+    parser = argparse.ArgumentParser(description='get some args')
+
+    #parser.add_argument("--name",type=str,default="classifier",help="name for logs")
+    parser.add_argument("--dataset",type=str,default="faces",help="name of dataset (mnist or art or faces)")
+    parser.add_argument("--logdir",type=str,default='logs/default/')
+    parser.add_argument("--quantity",type=int,default=250,help="quantity of images to use for training")
+    parser.add_argument("--test_split",type=int,default=10,help="1/test_split will be for testing")
+    parser.add_argument("--weights",type=str,default=None,help="weights= imagenet")
+    parser.add_argument("--level",type=str,default="dc",help="level of efficient net to use")
+    parser.add_argument("--save",type=bool,default=False, help="whether to save the model or not")
+    parser.add_argument("--epochs",type=int,default=10,help="epochs to train for")
+    parser.add_argument("--batch_size",type=int,default=16,help="batch size for training/loading data")
+    parser.add_argument("--max_dim",type=int,default=64,help="dimensions of input image")
+    parser.add_argument("--lr",type=float,default=0.01,help="learning rate for optimizer")
+    #parser.add_argument("--model_type",type=str,default="efficient",help="")
+
+
+
+    args = parser.parse_args()
+
+    def format_classifier_name(dataset=args.dataset,max_dim=args.max_dim,level=args.level,weights=args.weights,lr=args.lr):
+        return '{}-{}-{}-{}-{}'.format(dataset,max_dim,level,weights,lr)
+
+    styles=dataset_default_all_styles[args.dataset]
 
     train_log_dir = args.logdir + format_classifier_name() + '/train'
     test_log_dir = args.logdir + format_classifier_name() + '/test'
@@ -107,7 +125,7 @@ if __name__=="__main__":
 
     with strategy.scope():
         cfier=efficient_cfier(args.level,(args.max_dim,args.max_dim,3),styles,args.weights)
-        optimizer=tf.keras.optimizers.Adam(0.001,clipnorm=1.0)
+        optimizer=tf.keras.optimizers.Adam(0.0001)
 
         train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
         test_loss = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
