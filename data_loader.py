@@ -188,8 +188,6 @@ def get_loader(max_dim,styles,limit,root):
     image_size=(max_dim,max_dim,3)
     return tf.data.Dataset.from_generator(gen,output_signature=(tf.TensorSpec(shape=image_size)))
 
-    
-
 def get_loader_labels(max_dim,styles,limit,root):
     paths=get_npz_paths_labels(max_dim,styles,root)
     shuffle(paths)

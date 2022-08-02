@@ -22,6 +22,8 @@ parser.add_argument("--genres",nargs='+',type=str,default=[],help="which digits/
 parser.add_argument("--diversity",type=bool,default=False,help="whether to use unconditional diversity loss")
 parser.add_argument("--lambd",type=float,default=0.1,help="coefficient on diversity term")
 
+parser.add_argument("--kl_weight",type=float,default=0.0,help="weight on kl term; if 0, defaults to dataset size/batch size")
+
 parser.add_argument("--vgg_style",type=bool,default=False,help="whether to use vgg style reconstruction loss too")
 parser.add_argument("--blocks",nargs='+',type=str,default=["block1_conv1"],help="blocks for vgg extractor")
 parser.add_argument("--vgg_lambda",type=float,default=0.1,help="coefficient on vgg style loss")
@@ -58,7 +60,7 @@ parser.add_argument("--weights",type=str,default=None,help="weights= imagenet or
 parser.add_argument("--extra_epochs",type=int,default=0,help="whether to train the gan for any epochs after training the vae")
 
 
-for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,1000,4,8]):
+for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,250,4,8]):
     parser.add_argument("--{}".format(names),type=int,default=default)
 
 args = parser.parse_args()
@@ -90,7 +92,14 @@ if len(logical_gpus)>0:
 else:
     global_batch_size=args.batch_size
 
+actual_length=len(get_npz_paths(args.max_dim,args.genres, root_dict[args.dataset]))
+actual_length=min(actual_length,args.quantity)
+print("actual length of dataset= {}".format(actual_length))
 
+if args.kl_weight==0.0:
+    args.kl_weight=actual_length/global_batch_size
+
+print("kl weight = {}".format(args.kl_weight))
 
 train_log_dir = args.logdir + args.name + '/train'
 test_log_dir = args.logdir + args.name + '/test'
@@ -190,7 +199,7 @@ with strategy.scope():
         x_logit = model.decode(z,args.apply_sigmoid)
         cross_ent=(x-x_logit)**2
         reconst = tf.reduce_sum(cross_ent, axis=[1, 2, 3])
-        kl=-0.5 * tf.reduce_sum(1+logvar - mean**2 - tf.exp(logvar),axis=1)
+        kl= -0.5* args.kl_weight * tf.reduce_sum(1+logvar - mean**2 - tf.exp(logvar),axis=1)
 
         per_example_loss= reconst+kl
 
