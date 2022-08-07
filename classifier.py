@@ -2,9 +2,41 @@ import tensorflow as tf
 from data_loader import get_loader_labels
 from string_globals import *
 import argparse
-from vgg import VGGPreProcess
+from vgg import VGGPreProcess, Identity
+import random
 
-def efficient_cfier(model_level,input_shape,styles,weights="imagenet",activation=True):
+class RandomAugmentation(tf.keras.layers.Layer):
+    def __init__(self,factor,*args,**kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.factor=factor
+
+class RandomHorizontalFlip(RandomAugmentation):
+    def call(self,inputs):
+        if random.uniform(0,1)<self.factor:
+            return tf.image.flip_left_right(inputs)
+        return inputs
+
+class RandomAddNoise(RandomAugmentation):
+    def call(self,inputs):
+        if random.uniform(0,1)<self.factor:
+            shape=tf.shape(inputs)
+            return inputs + tf.random.normal(shape,0,1.0/255)
+        return inputs
+
+class RandomContrast(RandomAugmentation):
+    def call(self,inputs):
+        if random.uniform(0,1)<self.factor:
+            return tf.image.random_contrast(inputs,0.5,1.5)
+        return inputs
+
+class RandomBrightness(RandomAugmentation):
+    def call(self,inputs):
+        if random.uniform(0,1)<self.factor:
+            return tf.image.random_brightness(inputs,0.5,1.5)
+        return inputs
+    
+
+def efficient_cfier(model_level,input_shape,styles,weights="imagenet",activation=True,dropout=False,dense_layers=0,layer_1_n=64,layer_2_n=32,image_rotate=0.0,image_flip=0.0):
     if model_level=="dc":
         return dc_net(input_shape,styles,activation)
     elif model_level=="vgg":
@@ -21,12 +53,25 @@ def efficient_cfier(model_level,input_shape,styles,weights="imagenet",activation
 
     efficient=names_to_models[model_level](include_top=False,weights=weights,input_shape=input_shape,include_preprocessing=False)
 
-    model= tf.keras.Sequential([
+    layers=[
         tf.keras.layers.Rescaling(2.0,offset=-1), #scales [0-1] images to [-1,1] images
         efficient,
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(len(styles))
-    ])
+        tf.keras.layers.Flatten()]
+
+    if dropout:
+        layers+=[tf.keras.layers.Dropout(0.2),]
+
+        if dense_layers >0:
+            layers+=[tf.keras.layers.Dense(layer_1_n,activation='relu'),
+            tf.keras.layers.Dropout(0.2),]
+
+        if dense_layers > 1:
+            layers+=[tf.keras.layers.Dense(layer_2_n,activation='relu'),
+            tf.keras.layers.Dropout(0.2),]
+
+    layers.append(tf.keras.layers.Dense(len(styles)))
+
+    model= tf.keras.Sequential(layers)
 
     if activation:
         model.add(tf.keras.layers.Softmax())
@@ -98,13 +143,23 @@ if __name__=="__main__":
     parser.add_argument("--quantity",type=int,default=250,help="quantity of images to use for training")
     parser.add_argument("--test_split",type=int,default=10,help="1/test_split will be for testing")
     parser.add_argument("--weights",type=str,default=None,help="weights= imagenet")
-    parser.add_argument("--level",type=str,default="dc",help="level of efficient net to use")
+    parser.add_argument("--level",type=str,default="S",help="level of efficient net to use")
     parser.add_argument("--save",type=bool,default=False, help="whether to save the model or not")
     parser.add_argument("--epochs",type=int,default=10,help="epochs to train for")
     parser.add_argument("--batch_size",type=int,default=16,help="batch size for training/loading data")
     parser.add_argument("--max_dim",type=int,default=64,help="dimensions of input image")
     parser.add_argument("--lr",type=float,default=0.01,help="learning rate for optimizer")
     parser.add_argument("--activation",type=bool,default=False,help="whether to use softmax activation")
+    parser.add_argument("--dropout",type=bool,default=False,help="whether to use dropout or not")
+    parser.add_argument("--dense_layers",type=int,default=0,help="extra layers for classifier")
+    parser.add_argument("--name",type=str,default="")
+    parser.add_argument("--layer_1_n",type=int,default=32)
+    parser.add_argument("--layer_2_n",type=int,default=16)
+    parser.add_argument("--flip_factor",type=float,default=0.0, help="proportion of images to randomly flip")
+    parser.add_argument("--noise_factor",type=float,default=0.0,help="proprtion of images to randomly add noise to")
+    parser.add_argument("--rotation_factor",type=float,default=0,help="how much to rotate each image")
+    parser.add_argument("--brightness_factor",type=float,default=0.0,help="proportion to augment brightness")
+    parser.add_argument("--contrast_factor",type=float,default=0.0)
     #parser.add_argument("--model_type",type=str,default="efficient",help="")
 
 
@@ -112,6 +167,8 @@ if __name__=="__main__":
     args = parser.parse_args()
 
     def format_classifier_name(dataset=args.dataset,max_dim=args.max_dim,level=args.level,weights=args.weights,lr=args.lr,activation=args.activation):
+        if len(args.name)>0:
+            return args.name
         return '{}-{}-{}-{}-{}-{}'.format(dataset,max_dim,level,weights,lr,activation)
 
     styles=dataset_default_all_styles[args.dataset]
@@ -146,7 +203,17 @@ if __name__=="__main__":
     train_dataset = loader.enumerate().filter(lambda x,y: x % args.test_split != 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
 
     with strategy.scope():
-        cfier=efficient_cfier(args.level,(args.max_dim,args.max_dim,3),styles,args.weights,args.activation)
+        cfier=efficient_cfier(args.level,(args.max_dim,args.max_dim,3),styles,args.weights,args.activation,args.dropout,args.dense_layers,args.layer_1_n,args.layer_2_n)
+        augment_layers=[
+            Identity(),
+        tf.keras.layers.RandomRotation(args.rotation_factor),
+        RandomHorizontalFlip(args.flip_factor),
+        RandomAddNoise(args.noise_factor),
+        RandomBrightness(args.brightness_factor),
+        RandomContrast(args.contrast_factor)]
+
+        augment_model=tf.keras.Sequential(augment_layers)
+
         optimizer=tf.keras.optimizers.Adam(args.lr)
 
         train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
@@ -163,6 +230,7 @@ if __name__=="__main__":
     #end strategy.scope
 
     def train_step(images,labels):
+        images=augment_model(images)
         with tf.GradientTape() as tape:
             predicted_labels=cfier(images)
             loss=classification_loss(labels,predicted_labels)

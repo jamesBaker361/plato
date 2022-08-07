@@ -1,3 +1,6 @@
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,6 +14,10 @@ import random
 from fid import calculate_fid
 from vgg import *
 from optimizer_config import get_optimizer
+import logging
+logger = logging.getLogger()
+old_level = logger.level
+logger.setLevel(100)
 
 import argparse
 
@@ -22,7 +29,7 @@ parser.add_argument("--genres",nargs='+',type=str,default=[],help="which digits/
 parser.add_argument("--diversity",type=bool,default=False,help="whether to use unconditional diversity loss")
 parser.add_argument("--lambd",type=float,default=0.1,help="coefficient on diversity term")
 
-parser.add_argument("--kl_weight",type=float,default=0.0,help="weight on kl term; if 0, defaults to dataset size/batch size")
+parser.add_argument("--kl_weight",type=float,default=1.0,help="weight on kl term; if 0, defaults to dataset size/batch size")
 
 parser.add_argument("--vgg_style",type=bool,default=False,help="whether to use vgg style reconstruction loss too")
 parser.add_argument("--blocks",nargs='+',type=str,default=["block1_conv1"],help="blocks for vgg extractor")
@@ -46,8 +53,8 @@ parser.add_argument("--opt_name",type=str,default='adam',help="which optimizer t
 parser.add_argument("--clipnorm",type=float,default=1.0,help="max gradient norm")
 
 parser.add_argument("--fid",type=bool,default=False,help="whether to do FID scoring")
-parser.add_argument("--fid_interval",type=int, default=50,help="FID scoring every X intervals")
-parser.add_argument("--fid_sample_size",type=int,default=3000,help="how many images to do each FID scoring")
+parser.add_argument("--fid_interval",type=int, default=25,help="FID scoring every X intervals")
+parser.add_argument("--fid_sample_size",type=int,default=1000,help="how many images to do each FID scoring")
 
 parser.add_argument("--apply_sigmoid",type=bool,default=False,help="whether to apply sigmoid when sampling")
 
@@ -146,21 +153,12 @@ for name in scalar_names:
     metrics[name]=tf.keras.metrics.Mean(name,dtype=tf.float32)"""
 
 
-
-
-
-def log_normal_pdf(sample, mean, logvar, raxis=1):
-    log2pi = tf.math.log(2. * np.pi)
-    return tf.reduce_sum(
-            -.5 * ((sample - mean) ** 2. * tf.exp(-logvar) + logvar + log2pi),
-            axis=raxis)
-
-
-
 # keeping the random vector constant for generation (prediction) so
 # it will be easier to see the improvement.
 random_vector_for_generation = tf.random.normal(
         shape=[num_examples_to_generate, args.latent_dim])
+
+print("random vector shape ",random_vector_for_generation.shape)
 
 
 with strategy.scope():
@@ -379,7 +377,9 @@ def distributed_adversarial_step(x,gen_training):
 def generate_and_save_images(model, epoch, test_sample,apply_sigmoid):
     mean, logvar = model.encode(test_sample)
     z = model.reparameterize(mean, logvar)
+    print("z shape ",z.shape)
     predictions = model.sample(z,apply_sigmoid)
+    print("real prediction shape",predictions.shape)
     fig = plt.figure(figsize=(4, 4))
 
     for i in range(predictions.shape[0]):
@@ -393,11 +393,12 @@ def generate_and_save_images(model, epoch, test_sample,apply_sigmoid):
 
 def generate_from_noise(model,epoch,random_vector,apply_sigmoid):
     predictions = model.sample(random_vector,apply_sigmoid)
+    print("noise prediction shape",predictions.shape)
     fig = plt.figure(figsize=(4, 4))
 
     for i in range(predictions.shape[0]):
         plt.subplot(4, 4, i + 1)
-        plt.imshow(predictions[i, :, :, 0])
+        plt.imshow(predictions[i])
         plt.axis('off')
 
     # tight_layout minimizes the overlap between 2 sub-plots
@@ -415,6 +416,8 @@ assert args.batch_size >= num_examples_to_generate
 for test_batch in test_dataset.take(1):
     test_sample = test_batch[0:num_examples_to_generate, :, :, :]
     break
+
+print("test_sample shape =",test_sample.shape)
 
 train_dataset=strategy.experimental_distribute_dataset(train_dataset)
 test_dataset=strategy.experimental_distribute_dataset(test_dataset)
@@ -548,5 +551,9 @@ if args.fid:
     with fid_summary_writer.as_default():
         tf.summary.scalar("fid_score",fid_score,step=epoch)
     fid_loss.reset_states()
+
+
+print(random_vector_for_generation.shape)
+print(test_sample.shape)
 
 print("all done!")
