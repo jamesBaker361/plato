@@ -15,6 +15,7 @@ from fid import calculate_fid
 from vgg import *
 from optimizer_config import get_optimizer
 import logging
+from smote_data import *
 logger = logging.getLogger()
 old_level = logger.level
 logger.setLevel(100)
@@ -24,8 +25,10 @@ import argparse
 parser = argparse.ArgumentParser(description='get some args')
 
 parser.add_argument("--name",type=str,default="name")
-parser.add_argument("--dataset",type=str,default="mnist",help="name of dataset (mnist or art or faces)")
+parser.add_argument("--save",type=str,default=False,help="whether to save this model")
+parser.add_argument("--dataset",type=str,default="faces",help="name of dataset (mnist or art or faces)")
 parser.add_argument("--genres",nargs='+',type=str,default=[],help="which digits/artistic genres ")
+
 parser.add_argument("--diversity",type=bool,default=False,help="whether to use unconditional diversity loss")
 parser.add_argument("--lambd",type=float,default=0.1,help="coefficient on diversity term")
 
@@ -66,6 +69,7 @@ parser.add_argument("--level",type=str,default="dc",help="level of efficient net
 parser.add_argument("--weights",type=str,default=None,help="weights= imagenet or None for discirimnaotor")
 parser.add_argument("--extra_epochs",type=int,default=0,help="whether to train the gan for any epochs after training the vae")
 
+parser.add_argument("--generate_smote",type=bool,default=False,help="whether to generate any synthetic images for smote")
 
 for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,250,4,8]):
     parser.add_argument("--{}".format(names),type=int,default=default)
@@ -393,7 +397,6 @@ def generate_and_save_images(model, epoch, test_sample,apply_sigmoid):
 
 def generate_from_noise(model,epoch,random_vector,apply_sigmoid):
     predictions = model.sample(random_vector,apply_sigmoid)
-    print("noise prediction shape",predictions.shape)
     fig = plt.figure(figsize=(4, 4))
 
     for i in range(predictions.shape[0]):
@@ -552,8 +555,18 @@ if args.fid:
         tf.summary.scalar("fid_score",fid_score,step=epoch)
     fid_loss.reset_states()
 
+checkpoint_path=checkpoint_dir+"/"+args.name
+if args.save:
+    model.save(checkpoint_path)
+    print("saved at ",checkpoint_path)
 
-print(random_vector_for_generation.shape)
-print(test_sample.shape)
+if args.generate_smote:
+    for style in ["pointillism","fauvism","cubism","ukiyo-e"]:
+        avg,decoded=test_smote(model,args.max_dim,style)
+        real_loader=get_loader(args.max_dim,[style],1000,faces_npz_dir)
+        real_imgs=[i for i in real_loader]
+        fid_avg=calculate_fid(real_imgs,avg,image_size)
+        fid_decoded=calculate_fid(real_imgs,decoded,image_size)
+        print("style: {} averaged fid: {} decoded fid: {}".format(style,fid_avg,fid_decoded))
 
 print("all done!")

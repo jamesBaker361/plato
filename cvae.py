@@ -60,6 +60,11 @@ class CVAE(tf.keras.Model):
             return probs
         return logits
 
+    def call(self,inputs):
+        m,l=self.encode(inputs)
+        z=self.reparameterize(m,l)
+        return self.decode(z)
+
 if __name__ =="__main__":
     model=CVAE(128,64)
     #model(tf.random.uniform((1,64,64,3)))
