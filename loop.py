@@ -26,7 +26,8 @@ parser = argparse.ArgumentParser(description='get some args')
 
 parser.add_argument("--name",type=str,default="name")
 parser.add_argument("--save",type=str,default=False,help="whether to save this model")
-parser.add_argument("--dataset",type=str,default="faces",help="name of dataset (mnist or art or faces)")
+parser.add_argument("--dataset",type=str,default="faces2",help="name of dataset (mnist or art or faces or faces2)")
+parser.add_argument("--use_smote",type=bool,default=True)
 parser.add_argument("--genres",nargs='+',type=str,default=[],help="which digits/artistic genres ")
 
 parser.add_argument("--diversity",type=bool,default=False,help="whether to use unconditional diversity loss")
@@ -70,6 +71,8 @@ parser.add_argument("--weights",type=str,default=None,help="weights= imagenet or
 parser.add_argument("--extra_epochs",type=int,default=0,help="whether to train the gan for any epochs after training the vae")
 
 parser.add_argument("--generate_smote",type=bool,default=False,help="whether to generate any synthetic images for smote")
+parser.add_argument("--smote_minimum",type=int,default=250,help="bare minimum amount of examples in a class to generate smotes")
+parser.add_argument("--smote_maximum",type=int,default=2500,help="amount of samples we want for each class")
 
 for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,250,4,8]):
     parser.add_argument("--{}".format(names),type=int,default=default)
@@ -109,8 +112,6 @@ print("actual length of dataset= {}".format(actual_length))
 
 if args.kl_weight==0.0:
     args.kl_weight=actual_length/global_batch_size
-
-print("kl weight = {}".format(args.kl_weight))
 
 train_log_dir = args.logdir + args.name + '/train'
 test_log_dir = args.logdir + args.name + '/test'
@@ -162,7 +163,6 @@ for name in scalar_names:
 random_vector_for_generation = tf.random.normal(
         shape=[num_examples_to_generate, args.latent_dim])
 
-print("random vector shape ",random_vector_for_generation.shape)
 
 
 with strategy.scope():
@@ -408,7 +408,9 @@ def generate_from_noise(model,epoch,random_vector,apply_sigmoid):
     plt.savefig('{}/{}/gen_image_at_epoch_{:04d}.png'.format(gen_img_dir,args.name,epoch))
     plt.show()
 
-loader=get_loader(args.max_dim,args.genres,args.quantity,root_dict[args.dataset])
+loader=get_loader(args.max_dim,args.genres,args.quantity,root_dict[args.dataset],not args.use_smote)
+
+print("data set length",len([l for l in loader]))
 
 test_dataset = loader.enumerate().filter(lambda x,y: x % args.test_split == 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
 
@@ -561,12 +563,23 @@ if args.save:
     print("saved at ",checkpoint_path)
 
 if args.generate_smote:
-    for style in ["pointillism","fauvism","cubism","ukiyo-e"]:
-        avg,decoded=test_smote(model,args.max_dim,style)
+    '''for style in ["pointillism","fauvism","cubism","ukiyo-e","pop-art"]:
+        avg,decoded,mean_log=test_smote(model,args.max_dim,style)
         real_loader=get_loader(args.max_dim,[style],1000,faces_npz_dir)
         real_imgs=[i for i in real_loader]
         fid_avg=calculate_fid(real_imgs,avg,image_size)
         fid_decoded=calculate_fid(real_imgs,decoded,image_size)
-        print("style: {} averaged fid: {} decoded fid: {}".format(style,fid_avg,fid_decoded))
+        fid_mean_log=calculate_fid(real_imgs,mean_log,image_size)
+        print("style: {} averaged fid: {} decoded fid: {} mean log fid {}".format(style,fid_avg,fid_decoded,fid_mean_log))'''
+    target_root=root_dict[args.dataset]
+    target_styles=[s for s in os.listdir(target_root) if s[0]!='.' and len(os.listdir(os.path.join(target_root,s))) >args.smote_minimum and len(os.listdir(os.path.join(target_root,s))) <args.smote_maximum]
+    print(target_styles)
+    for style in target_styles:
+        synthetic=make_smote(model,args.max_dim,style,args.smote_maximum)
+        for s,img in enumerate(synthetic):
+            new_file='{}.{}.{}.npy'.format(smote_sample,s,args.max_dim)
+            new_path=os.path.join(target_root,style,new_file)
+            np.save(new_path,img)
+            print("saved at ",new_path)
 
 print("all done!")

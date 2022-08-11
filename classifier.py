@@ -1,3 +1,6 @@
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+
 import tensorflow as tf
 from data_loader import get_loader_labels
 from string_globals import *
@@ -160,6 +163,8 @@ if __name__=="__main__":
     parser.add_argument("--rotation_factor",type=float,default=0,help="how much to rotate each image")
     parser.add_argument("--brightness_factor",type=float,default=0.0,help="proportion to augment brightness")
     parser.add_argument("--contrast_factor",type=float,default=0.0)
+    parser.add_argument("--use_smote",type=bool,default=False,help="whether to use smote (synthetic) data")
+
     #parser.add_argument("--model_type",type=str,default="efficient",help="")
 
 
@@ -196,7 +201,9 @@ if __name__=="__main__":
     else:
         global_batch_size=args.batch_size
 
-    loader=get_loader_labels(args.max_dim,styles,args.quantity,root_dict[args.dataset])
+    loader=get_loader_labels(args.max_dim,styles,args.quantity,root_dict[args.dataset],not args.use_smote)
+
+    print("data set length",len([l for l in loader]))
 
     test_dataset = loader.enumerate().filter(lambda x,y: x % args.test_split == 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
 

@@ -72,7 +72,7 @@ def styles_to_npz(max_dim,styles=all_styles,root=npz_root,root_img_dir=img_dir):
         np.save(new_np,img)
         print("saved",new_np)
 
-def get_npz_paths(max_dim,styles,root=npz_root):
+def get_npz_paths(max_dim,styles,root=npz_root,no_smote=True):
     '''It takes a list of styles and a maximum dimension, and returns a list of paths to the npz files for
     those styles
     
@@ -95,9 +95,11 @@ def get_npz_paths(max_dim,styles,root=npz_root):
     all_styles_npz=[root+"/"+s for s in styles]
     for dir,style in zip(all_styles_npz,styles):
         ret+=[dir+"/"+image for image in os.listdir(dir) if image.endswith(('{}.npy'.format(max_dim)))]
+    if no_smote:
+        ret=[r for r in ret if r.find(smote_sample)==-1]
     return ret
 
-def get_npz_paths_labels(max_dim,styles,root=npz_root):
+def get_npz_paths_labels(max_dim,styles,root=npz_root,no_smote=True):
     '''> It takes a list of styles and a maximum dimension, and returns a list of tuples of the form
     (path,style) for all the images in the styles list
     
@@ -119,6 +121,8 @@ def get_npz_paths_labels(max_dim,styles,root=npz_root):
     all_styles_npz=[root+"/"+s for s in styles]
     for dir,style in zip(all_styles_npz,styles):
         ret+=[(dir+"/"+image,style )for image in os.listdir(dir) if image.endswith(('{}.npy'.format(max_dim)))]
+    if no_smote:
+        ret=[r for r in ret if r[0].find(smote_sample)==-1]
     return ret
 
 
@@ -162,7 +166,7 @@ def generator(paths):
             yield np.load(p) /255
     return _generator
 
-def get_loader(max_dim,styles,limit,root):
+def get_loader(max_dim,styles,limit,root,no_smote):
     '''It returns a tensorflow dataset that generates images from the npz files in the specified directory
     
     Parameters
@@ -181,15 +185,15 @@ def get_loader(max_dim,styles,limit,root):
         A dataset of images of size (max_dim,max_dim,3)
     
     '''
-    paths=get_npz_paths(max_dim,styles,root)
+    paths=get_npz_paths(max_dim,styles,root,no_smote)
     shuffle(paths)
     paths=paths[:limit]
     gen=generator(paths)
     image_size=(max_dim,max_dim,3)
     return tf.data.Dataset.from_generator(gen,output_signature=(tf.TensorSpec(shape=image_size)))
 
-def get_loader_labels(max_dim,styles,limit,root):
-    paths=get_npz_paths_labels(max_dim,styles,root)
+def get_loader_labels(max_dim,styles,limit,root,no_smote):
+    paths=get_npz_paths_labels(max_dim,styles,root,no_smote)
     shuffle(paths)
     paths=paths[:limit]
     ohencoder=OneHotEncoder(styles)
