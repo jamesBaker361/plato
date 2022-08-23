@@ -27,7 +27,7 @@ parser = argparse.ArgumentParser(description='get some args')
 parser.add_argument("--name",type=str,default="name")
 parser.add_argument("--save",type=str,default=False,help="whether to save this model")
 parser.add_argument("--dataset",type=str,default="faces2",help="name of dataset (mnist or art or faces or faces2)")
-parser.add_argument("--use_smote",type=bool,default=True)
+parser.add_argument("--use_smote",type=bool,default=True,)
 parser.add_argument("--genres",nargs='+',type=str,default=[],help="which digits/artistic genres ")
 
 parser.add_argument("--diversity",type=bool,default=False,help="whether to use unconditional diversity loss")
@@ -63,16 +63,24 @@ parser.add_argument("--fid_sample_size",type=int,default=1000,help="how many ima
 parser.add_argument("--apply_sigmoid",type=bool,default=False,help="whether to apply sigmoid when sampling")
 
 parser.add_argument("--gan",type=bool,default=False,help="whether to implement GAN training or not")
-parser.add_argument("--gan_start",type=int,default=0,help="# of epochs after which to start GAN training")
+parser.add_argument("--gan_start",type=int,default=150,help="# of epochs after which to start GAN training")
 parser.add_argument("--lambda_gp",type=float, default=10.0,help="lambda on gradient penalty")
 parser.add_argument("--n_critic",type=int, default=5,help="train the discriminator n times more than generator")
-parser.add_argument("--level",type=str,default="dc",help="level of efficient net to use for disciriminator")
-parser.add_argument("--weights",type=str,default=None,help="weights= imagenet or None for discirimnaotor")
-parser.add_argument("--extra_epochs",type=int,default=0,help="whether to train the gan for any epochs after training the vae")
+parser.add_argument("--level",type=str,default="dc",help="which architecture to use for disciriminator")
+parser.add_argument("--weights",type=str,default=None,help="weights= imagenet or None for vgg discirimnaotor")
+parser.add_argument("--extra_epochs",type=int,default=100,help="whether to train the gan for any epochs after training the vae")
 
 parser.add_argument("--generate_smote",type=bool,default=False,help="whether to generate any synthetic images for smote")
-parser.add_argument("--smote_minimum",type=int,default=250,help="bare minimum amount of examples in a class to generate smotes")
+parser.add_argument("--smote_minimum",type=int,default=100,help="bare minimum amount of examples in a class to generate smotes")
 parser.add_argument("--smote_maximum",type=int,default=2500,help="amount of samples we want for each class")
+
+parser.add_argument("--creativity",type=bool,default=False,help="whether to use elgammal creatvity loss")
+parser.add_argument("--creativity_lambda",type=float,default=0.1,help="coefficient on creativty loss")
+parser.add_argument("--classifier_path",type=str,default="../../../../../scratch/jlb638/plato/checkpoints/creativity_2_64",help="path to load classifier from")
+parser.add_argument("--creativity_start",type=int,default=150,help="epoch when to start applying creativity loss")
+
+parser.add_argument("--evaluation_imgs",type=int,default=0,help="how many images to generate at the end for evaluation")
+parser.add_argument("--evaluation_path",type=str,default="./evaluation/",help="where to save evaluation images")
 
 for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,250,4,8]):
     parser.add_argument("--{}".format(names),type=int,default=default)
@@ -118,6 +126,7 @@ test_log_dir = args.logdir + args.name + '/test'
 diversity_log_dir=args.logdir + args.name + '/diversity'
 vgg_log_dir=args.logdir+args.name+"/vgg"
 resnet_log_dir=args.logdir+args.name+"/resnet"
+creativity_log_dir=args.logdir+args.name+"/creativity"
 
 
 
@@ -130,6 +139,7 @@ test_summary_writer = tf.summary.create_file_writer(test_log_dir)
 diversity_summary_writer=tf.summary.create_file_writer(diversity_log_dir)
 vgg_summary_writer=tf.summary.create_file_writer(vgg_log_dir)
 resnet_summary_writer=tf.summary.create_file_writer(resnet_log_dir)
+creativity_summary_writer=tf.summary.create_file_writer(creativity_log_dir)
 
 if args.fid:
     fid_log_dir=args.logdir+args.name+"/fid"
@@ -144,18 +154,6 @@ if args.gan:
     gp_summary_writer=tf.summary.create_file_writer(gp_log_dir)
     disc_summary_writer=tf.summary.create_file_writer(disc_log_dir)
     gen_summary_writer=tf.summary.create_file_writer(gen_log_dir)
-
-
-
-#scalar_names=["logpx_z","logpz","logqz_x","kl","reconst"]
-
-"""dirs={}
-writers={}
-metrics={}
-for name in scalar_names:
-    dirs[name]=args.logdir + args.name + '/'+name
-    writers[name]=tf.summary.create_file_writer(dirs[name])
-    metrics[name]=tf.keras.metrics.Mean(name,dtype=tf.float32)"""
 
 
 # keeping the random vector constant for generation (prediction) so
@@ -178,7 +176,6 @@ with strategy.scope():
         args.cycle_steps,
         args.phase_one_pct,
         args.clipnorm)
-    #optimizer = tf.keras.optimizers.Adam(0.00001,clipnorm=1.0)
     if args.vgg_style:
         vgg_style_extractor=vgg_layers(args.blocks,image_size)
 
@@ -194,6 +191,7 @@ with strategy.scope():
     gp_loss=tf.keras.metrics.Mean("gp_loss",dtype=tf.float32)
     disc_loss=tf.keras.metrics.Mean("disc_loss",dtype=tf.float32)
     gen_loss=tf.keras.metrics.Mean("gen_loss",dtype=tf.float32)
+    creativity_loss=tf.keras.metrics.Mean("creativity_loss",dtype=tf.float32)
 
     def compute_loss(x):
         mean, logvar = model.encode(x)
@@ -263,6 +261,18 @@ with strategy.scope():
             loss=[tf.reduce_mean(labels)]
             return tf.nn.compute_average_loss(loss, global_batch_size=global_batch_size)
 
+    if args.creativity:
+        classifier=tf.keras.models.load_model(args.classifier_path)
+        print('loaded from ',args.classifier_path)
+
+        def compute_creativity_loss(class_labels):
+            uniform=tf.fill([args.batch_size,len(args.genres)],1.0/len(args.genres))
+            cce = tf.keras.losses.CategoricalCrossentropy(reduction=tf.keras.losses.Reduction.NONE)
+            loss=cce(class_labels,uniform)
+            return tf.nn.compute_average_loss(args.creativity_lambda * loss, global_batch_size=global_batch_size)
+
+
+
 #end strategy scope
 
 def train_step(x):
@@ -314,7 +324,6 @@ def fid_step(model,noise,loader):
         images2=i
         break
     loss=calculate_fid(images1,images2,(args.max_dim,args.max_dim,3))
-    #fid_loss(loss)
     return loss
 
 if args.gan:
@@ -340,8 +349,32 @@ if args.gan:
             gen_gradients=gen_tape.gradient(g_loss,model.decoder.trainable_variables)
             optimizer.apply_gradients(zip(gen_gradients, model.decoder.trainable_variables))
         return g_loss,d_loss
-
     
+    @tf.function
+    def distributed_adversarial_step(x,gen_training):
+        per_replica_losses = strategy.run(adversarial_step, args=(x,gen_training,))
+        return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
+                            axis=None)
+
+if args.creativity:
+    def creatvity_step(x):
+        with tf.GradientTape(persistent=True) as tape:
+            mean, logvar = model.encode(x)
+            z = model.reparameterize(mean, logvar)
+            x_logit = model.decode(z,args.apply_sigmoid)
+            class_labels=classifier(x_logit)
+            loss=compute_creativity_loss(class_labels)
+        gradients = tape.gradient(loss, model.trainable_variables)
+        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        creativity_loss(loss)
+        return loss
+
+    @tf.function
+    def distributed_creativity_step(x):
+        per_replica_losses = strategy.run(creatvity_step, args= (x,))
+        return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
+                         axis=None)
+        
 
 
 @tf.function
@@ -372,11 +405,6 @@ def distributed_resnet_style_step(x):
     return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
                          axis=None)
 
-@tf.function
-def distributed_adversarial_step(x,gen_training):
-    per_replica_losses = strategy.run(adversarial_step, args=(x,gen_training,))
-    return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
-                         axis=None)
 
 def generate_and_save_images(model, epoch, test_sample,apply_sigmoid):
     mean, logvar = model.encode(test_sample)
@@ -391,7 +419,6 @@ def generate_and_save_images(model, epoch, test_sample,apply_sigmoid):
         plt.imshow(predictions[i])
         plt.axis('off')
 
-    # tight_layout minimizes the overlap between 2 sub-plots
     plt.savefig('{}/{}/image_at_epoch_{:04d}.png'.format(gen_img_dir,args.name,epoch))
     plt.show()
 
@@ -404,7 +431,6 @@ def generate_from_noise(model,epoch,random_vector,apply_sigmoid):
         plt.imshow(predictions[i])
         plt.axis('off')
 
-    # tight_layout minimizes the overlap between 2 sub-plots
     plt.savefig('{}/{}/gen_image_at_epoch_{:04d}.png'.format(gen_img_dir,args.name,epoch))
     plt.show()
 
@@ -421,8 +447,6 @@ assert args.batch_size >= num_examples_to_generate
 for test_batch in test_dataset.take(1):
     test_sample = test_batch[0:num_examples_to_generate, :, :, :]
     break
-
-print("test_sample shape =",test_sample.shape)
 
 train_dataset=strategy.experimental_distribute_dataset(train_dataset)
 test_dataset=strategy.experimental_distribute_dataset(test_dataset)
@@ -447,6 +471,8 @@ for epoch in range(1, args.epochs + 1):
         if args.gan and args.gan_start<=epoch:
             gen_training = (epoch % args.n_critic== True)
             distributed_adversarial_step(train_x,gen_training)
+        if args.creativity and epoch >=args.creativity_start:
+            distributed_creativity_step(train_x)
     end_time = time.time()
     with train_summary_writer.as_default():
         tf.summary.scalar('training_loss', train_loss.result(), step=epoch)
@@ -457,6 +483,11 @@ for epoch in range(1, args.epochs + 1):
     if args.resnet:
         with resnet_summary_writer.as_default():
             tf.summary.scalar('resnet_loss',resnet_loss.result(),step=epoch)
+
+    if args.creativity and epoch >=args.creativity_start:
+        with creativity_summary_writer.as_default():
+            tf.summary.scalar("creativity_loss",creativity_loss.result(),step=epoch)
+
 
     if args.diversity:
         for _ in range(args.diversity_batches):
@@ -485,11 +516,6 @@ for epoch in range(1, args.epochs + 1):
     with test_summary_writer.as_default():
         tf.summary.scalar('loss', test_loss.result(), step=epoch)
 
-    '''for name in ["logpx_z","logpz","logqz_x","kl","reconst"][3:]:
-        with writers[name].as_default():
-            tf.summary.scalar('loss', metrics[name].result(), step=epoch)
-            metrics[name].reset_states()'''
-
     display.clear_output(wait=False)
     print('Epoch: {}, Test set ELBO: {}, time elapse for current epoch: {}'
                 .format(epoch, elbo, end_time - start_time))
@@ -515,14 +541,13 @@ if args.fid:
     fid_score=fid_step(model,random_vector_fid,loader)
     print("FID score {}".format(fid_score))
     with fid_summary_writer.as_default():
-        tf.summary.scalar("fid_score",fid_score,step=epoch)
+        tf.summary.scalar("fid_score",fid_score,step=args.epochs + 1)
     fid_loss.reset_states()
 
 if args.gan and args.extra_epochs>0:
     for epoch in range(args.epochs+1,1+args.epochs+args.extra_epochs):
         start_time = time.time()
         for train_x in train_dataset:
-            #z=tf.random.uniform((global_batch_size,args.latent_dim))
             gen_training = (epoch % args.n_critic== True)
             distributed_adversarial_step(train_x,gen_training)
         end_time = time.time()
@@ -563,23 +588,37 @@ if args.save:
     print("saved at ",checkpoint_path)
 
 if args.generate_smote:
-    '''for style in ["pointillism","fauvism","cubism","ukiyo-e","pop-art"]:
-        avg,decoded,mean_log=test_smote(model,args.max_dim,style)
-        real_loader=get_loader(args.max_dim,[style],1000,faces_npz_dir)
-        real_imgs=[i for i in real_loader]
-        fid_avg=calculate_fid(real_imgs,avg,image_size)
-        fid_decoded=calculate_fid(real_imgs,decoded,image_size)
-        fid_mean_log=calculate_fid(real_imgs,mean_log,image_size)
-        print("style: {} averaged fid: {} decoded fid: {} mean log fid {}".format(style,fid_avg,fid_decoded,fid_mean_log))'''
     target_root=root_dict[args.dataset]
-    target_styles=[s for s in os.listdir(target_root) if s[0]!='.' and len(os.listdir(os.path.join(target_root,s))) >args.smote_minimum and len(os.listdir(os.path.join(target_root,s))) <args.smote_maximum]
+    target_styles=[]
+    for s in os.listdir(target_root):
+        path=os.path.join(target_root,s)
+        if os.path.isdir(path):
+            length=len(get_npz_paths(args.max_dim,[s],target_root,True))
+            if length>args.smote_minimum and length < args.smote_maximum:
+                target_styles.append(s)
+    #target_styles=[s for s in os.listdir(target_root) if s[0]!='.' and len(os.listdir(os.path.join(target_root,s))) >args.smote_minimum and len(os.listdir(os.path.join(target_root,s))) <args.smote_maximum]
     print(target_styles)
     for style in target_styles:
         synthetic=make_smote(model,args.max_dim,style,args.smote_maximum)
+        print("style {} with {} SMOTE things".format(s,len(synthetic)))
         for s,img in enumerate(synthetic):
             new_file='{}.{}.{}.npy'.format(smote_sample,s,args.max_dim)
             new_path=os.path.join(target_root,style,new_file)
-            np.save(new_path,img)
-            print("saved at ",new_path)
+            np.save(new_path,255*img)
+            print("\tsaved at ",new_path)
+
+
+if args.evaluation_imgs >0:
+    eval_dir=args.evaluation_path+args.name
+    os.makedirs(eval_dir)
+    evaluation_latent_vector = tf.random.normal(
+        shape=[args.evaluation_imgs, args.latent_dim])
+    predictions = model.sample(evaluation_latent_vector,args.apply_sigmoid)
+    
+    for i in range(predictions.shape[0]):
+        plt.imshow(predictions[i])
+        plt.savefig('{}/{}.png'.format(eval_dir,i))
+        plt.show()
+    
 
 print("all done!")

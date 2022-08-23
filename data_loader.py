@@ -92,11 +92,15 @@ def get_npz_paths(max_dim,styles,root=npz_root,no_smote=True):
     
     '''
     ret=[]
-    all_styles_npz=[root+"/"+s for s in styles]
-    for dir,style in zip(all_styles_npz,styles):
+    all_styles_npz_local=[root+"/"+s for s in styles]
+    for dir,style in zip(all_styles_npz_local,styles):
         ret+=[dir+"/"+image for image in os.listdir(dir) if image.endswith(('{}.npy'.format(max_dim)))]
     if no_smote:
-        ret=[r for r in ret if r.find(smote_sample)==-1]
+        okay=[]
+        for r in ret:
+            if r.find(smote_sample)==-1:
+                okay.append(r)
+        return okay
     return ret
 
 def get_npz_paths_labels(max_dim,styles,root=npz_root,no_smote=True):
@@ -143,7 +147,7 @@ class OneHotEncoder:
 def generator_labels(paths,ohencoder):
     def _generator():
         for p,style in paths:
-            yield (np.load(p) /255, ohencoder.transform(style))
+            yield (np.load(p)/255, ohencoder.transform(style))
     return _generator
 
 

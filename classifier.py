@@ -141,7 +141,7 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser(description='get some args')
 
     #parser.add_argument("--name",type=str,default="classifier",help="name for logs")
-    parser.add_argument("--dataset",type=str,default="faces",help="name of dataset (mnist or art or faces)")
+    parser.add_argument("--dataset",type=str,default="faces2",help="name of dataset (mnist or art or faces)")
     parser.add_argument("--logdir",type=str,default='logs/default/')
     parser.add_argument("--quantity",type=int,default=250,help="quantity of images to use for training")
     parser.add_argument("--test_split",type=int,default=10,help="1/test_split will be for testing")
@@ -292,3 +292,4 @@ if __name__=="__main__":
     checkpoint_path=checkpoint_dir+"/"+format_classifier_name()
     if args.save:
         cfier.save(checkpoint_path)
+        print("saved at ",checkpoint_path)
