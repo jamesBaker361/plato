@@ -617,6 +617,8 @@ if args.evaluation_imgs >0:
         shape=[args.evaluation_imgs, args.latent_dim])
     predictions = model.sample(evaluation_latent_vector,args.apply_sigmoid)
 
+    predictions=tf.image.resize(predictions, [256,256])
+
     predictions= super_res(predictions)
     
     plt.figure()
