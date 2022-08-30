@@ -16,7 +16,7 @@ all_digits_npz=[mnist_npz_root+"/"+d for d in all_digits]
 all_styles_faces=[s for s in os.listdir(faces_dir) if s[0]!='.' if len(os.listdir(os.path.join(faces_dir,s))) >250]
 all_styles_faces_smote=[s for s in os.listdir(faces_dir) if s[0]!='.' if len(os.listdir(os.path.join(faces_dir,s))) >250 and len(os.listdir(os.path.join(faces_dir,s)))<1000]
 all_styles_faces_npz=[faces_npz_dir+"/"+s for s in all_styles_faces]
-all_styles_faces_2=[s for s in os.listdir(faces_npz_dir_2) if s[0]!='.' and len(os.listdir(os.path.join(faces_npz_dir_2,s))) >0]
+all_styles_faces_2=[s for s in os.listdir(faces_npz_dir_2) if s[0]!='.' and len(os.listdir(os.path.join(faces_npz_dir_2,s))) >=2500]
 #smote_styles_faces_2=[s for s in os.listdir(faces_npz_dir_2) if s[0]!='.' and len(os.listdir(os.path.join(faces_npz_dir_2,s))) >250 and len(os.listdir(os.path.join(faces_npz_dir_2,s))) <2500]
 
 all_styles_birds=[s for s in os.listdir(bird_npz_dir)if s[0]!='.']

@@ -178,6 +178,9 @@ if __name__=="__main__":
 
     styles=dataset_default_all_styles[args.dataset]
 
+    print("# of styles ",len(styles))
+    print(styles)
+
     train_log_dir = args.logdir + format_classifier_name() + '/train'
     test_log_dir = args.logdir + format_classifier_name() + '/test'
     accuracy_log_dir=args.logdir + format_classifier_name() + '/accuracy'

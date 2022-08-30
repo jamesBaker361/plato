@@ -57,7 +57,7 @@ parser.add_argument("--opt_name",type=str,default='adam',help="which optimizer t
 parser.add_argument("--clipnorm",type=float,default=1.0,help="max gradient norm")
 
 parser.add_argument("--fid",type=bool,default=False,help="whether to do FID scoring")
-parser.add_argument("--fid_interval",type=int, default=25,help="FID scoring every X intervals")
+parser.add_argument("--fid_interval",type=int, default=10,help="FID scoring every X intervals")
 parser.add_argument("--fid_sample_size",type=int,default=1000,help="how many images to do each FID scoring")
 
 parser.add_argument("--apply_sigmoid",type=bool,default=False,help="whether to apply sigmoid when sampling")
@@ -75,9 +75,9 @@ parser.add_argument("--smote_minimum",type=int,default=100,help="bare minimum am
 parser.add_argument("--smote_maximum",type=int,default=2500,help="amount of samples we want for each class")
 
 parser.add_argument("--creativity",type=bool,default=False,help="whether to use elgammal creatvity loss")
-parser.add_argument("--creativity_lambda",type=float,default=0.1,help="coefficient on creativty loss")
-parser.add_argument("--classifier_path",type=str,default="../../../../../scratch/jlb638/plato/checkpoints/creativity_2_64",help="path to load classifier from")
-parser.add_argument("--creativity_start",type=int,default=150,help="epoch when to start applying creativity loss")
+parser.add_argument("--creativity_lambda",type=float,default=100,help="coefficient on creativty loss")
+parser.add_argument("--classifier_path",type=str,default="../../../../../scratch/jlb638/plato/checkpoints/creativity_3_64",help="path to load classifier from")
+parser.add_argument("--creativity_start",type=int,default=0,help="epoch when to start applying creativity loss")
 
 parser.add_argument("--evaluation_imgs",type=int,default=0,help="how many images to generate at the end for evaluation")
 parser.add_argument("--evaluation_path",type=str,default="./evaluation/",help="where to save evaluation images")
@@ -609,12 +609,18 @@ if args.generate_smote:
 
 
 if args.evaluation_imgs >0:
+    import tensorflow_hub as hub
+    super_res = hub.load("https://tfhub.dev/captain-pool/esrgan-tf2/1")
     eval_dir=args.evaluation_path+args.name
     os.makedirs(eval_dir)
     evaluation_latent_vector = tf.random.normal(
         shape=[args.evaluation_imgs, args.latent_dim])
     predictions = model.sample(evaluation_latent_vector,args.apply_sigmoid)
+
+    predictions= super_res(predictions)
     
+    plt.figure()
+
     for i in range(predictions.shape[0]):
         plt.imshow(predictions[i])
         plt.savefig('{}/{}.png'.format(eval_dir,i))
