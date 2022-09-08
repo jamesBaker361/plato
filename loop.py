@@ -619,7 +619,7 @@ if args.evaluation_imgs >0:
 
     predictions=tf.image.resize(predictions, [256,256])
 
-    predictions= super_res(predictions)
+    #predictions= super_res(predictions)
     
     plt.figure()
 

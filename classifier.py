@@ -204,13 +204,16 @@ if __name__=="__main__":
     else:
         global_batch_size=args.batch_size
 
-    loader=get_loader_labels(args.max_dim,styles,args.quantity,root_dict[args.dataset],not args.use_smote)
+    if args.use_smote:
+        loader=get_loader_labels(args.max_dim,styles,args.quantity,root_dict[args.dataset],not args.use_smote)
+    else:
+        loader=get_loader_oversample_labels(args.max_dim,style_quantity_dicts[args.dataset],root_dict[args.dataset])
 
     print("data set length",len([l for l in loader]))
 
-    test_dataset = loader.enumerate().filter(lambda x,y: x % args.test_split == 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
+    test_dataset = loader.enumerate().filter(lambda x,y: x % args.test_split == 0).map(lambda x,y: y).batch(global_batch_size,drop_remainder=True)
 
-    train_dataset = loader.enumerate().filter(lambda x,y: x % args.test_split != 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
+    train_dataset = loader.enumerate().filter(lambda x,y: x % args.test_split != 0).map(lambda x,y: y).batch(global_batch_size,drop_remainder=True)
 
     with strategy.scope():
         cfier=efficient_cfier(args.level,(args.max_dim,args.max_dim,3),styles,args.weights,args.activation,args.dropout,args.dense_layers,args.layer_1_n,args.layer_2_n)

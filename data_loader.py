@@ -3,8 +3,11 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 from string_globals import *
 import tensorflow as tf
 import numpy as np
-from random import shuffle
+from random import Random
 #from sklearn.preprocessing import OneHotEncoder
+
+def shuffle(array):
+    return Random(1234).shuffle(array)
 
 def get_img_paths(styles,img_dir=img_dir):
     '''It takes a list of styles and returns a list of tuples of the form (image_path,style,image_name)
@@ -72,7 +75,7 @@ def styles_to_npz(max_dim,styles=all_styles,root=npz_root,root_img_dir=img_dir):
         np.save(new_np,img)
         print("saved",new_np)
 
-def get_npz_paths(max_dim,styles,root=npz_root,no_smote=True):
+def get_npz_paths(max_dim=64,styles=all_styles_faces_2,root=faces_npz_dir_2,no_smote=True):
     '''It takes a list of styles and a maximum dimension, and returns a list of paths to the npz files for
     those styles
     
@@ -103,7 +106,7 @@ def get_npz_paths(max_dim,styles,root=npz_root,no_smote=True):
         return okay
     return ret
 
-def get_npz_paths_labels(max_dim,styles,root=npz_root,no_smote=True):
+def get_npz_paths_labels(max_dim=64,styles=all_styles_faces_2,root=faces_npz_dir_2,no_smote=True):
     '''> It takes a list of styles and a maximum dimension, and returns a list of tuples of the form
     (path,style) for all the images in the styles list
     
@@ -170,7 +173,7 @@ def generator(paths):
             yield np.load(p) /255
     return _generator
 
-def get_loader(max_dim,styles,limit,root,no_smote):
+def get_loader(max_dim=64,styles=all_styles_faces_2,limit=100,root=faces_npz_dir_2,no_smote=True):
     '''It returns a tensorflow dataset that generates images from the npz files in the specified directory
     
     Parameters
@@ -196,7 +199,7 @@ def get_loader(max_dim,styles,limit,root,no_smote):
     image_size=(max_dim,max_dim,3)
     return tf.data.Dataset.from_generator(gen,output_signature=(tf.TensorSpec(shape=image_size)))
 
-def get_loader_labels(max_dim,styles,limit,root,no_smote):
+def get_loader_labels(max_dim=64,styles=all_styles_faces_2,limit=100,root=faces_npz_dir_2,no_smote=True):
     paths=get_npz_paths_labels(max_dim,styles,root,no_smote)
     shuffle(paths)
     paths=paths[:limit]
@@ -206,11 +209,30 @@ def get_loader_labels(max_dim,styles,limit,root,no_smote):
     output_sig_shapes=tuple([tf.TensorSpec(shape=image_size),tf.TensorSpec(shape=(len(styles)))])
     return tf.data.Dataset.from_generator(gen,output_signature=output_sig_shapes)
 
+def get_loader_oversample(max_dim,styles_quantity_dict,root): #this doesnt use smote it just gets extras/duplicates
+    paths=[]
+    for style,quantity in styles_quantity_dict.items():
+        new_paths=get_npz_paths(max_dim,[style],root)
+        while len(new_paths) < quantity:
+            new_paths+=get_npz_paths(max_dim,[style],root)
+        new_paths=new_paths[:quantity]
+        paths+=new_paths
+    shuffle(paths)
+    gen=generator(paths)
+    image_size=(max_dim,max_dim,3)
+    return tf.data.Dataset.from_generator(gen,output_signature=(tf.TensorSpec(shape=image_size)))
 
-if __name__ == "__main__":
-    #styles=[s for s in set(sys.argv).intersection(set(all_styles))]
-    #styles=all_styles_faces
-    for m in [64,128,256]:
-        styles_to_npz(m,all_styles_faces,faces_npz_dir,faces_dir)
-        #styles_to_npz(m,styles)
-        #styles_to_npz(m,all_digits,mnist_npz_root)
+def get_loader_oversample_labels(max_dim,styles_quantity_dict,root): #this doesnt use smote it just gets extras/duplicates
+    paths=[]
+    for style,quantity in styles_quantity_dict.items():
+        new_paths=get_npz_paths_labels(max_dim,[style],root)
+        while len(new_paths) < quantity:
+            new_paths+=get_npz_paths_labels(max_dim,[style],root)
+        new_paths=new_paths[:quantity]
+        paths+=new_paths
+    shuffle(paths)
+    ohencoder=OneHotEncoder([s for s in styles_quantity_dict.keys()])
+    gen=generator_labels(paths,ohencoder)
+    image_size=(max_dim,max_dim,3)
+    output_sig_shapes=tuple([tf.TensorSpec(shape=image_size),tf.TensorSpec(shape=(len(styles_quantity_dict)))])
+    return tf.data.Dataset.from_generator(gen,output_signature=output_sig_shapes)

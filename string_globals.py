@@ -13,10 +13,10 @@ all_styles=[s for s in os.listdir('{}'.format(img_dir)) if s[0]!='.']
 all_styles_npz=[npz_root+"/"+s for s in all_styles] #marina, figurative, portrait,etc
 all_digits=[str(i) for i in range(10)]
 all_digits_npz=[mnist_npz_root+"/"+d for d in all_digits]
-all_styles_faces=[s for s in os.listdir(faces_dir) if s[0]!='.' if len(os.listdir(os.path.join(faces_dir,s))) >250]
+all_styles_faces=[s for s in os.listdir(faces_dir) if s[0]!='.' if len(os.listdir(os.path.join(faces_dir,s))) >100]
 all_styles_faces_smote=[s for s in os.listdir(faces_dir) if s[0]!='.' if len(os.listdir(os.path.join(faces_dir,s))) >250 and len(os.listdir(os.path.join(faces_dir,s)))<1000]
 all_styles_faces_npz=[faces_npz_dir+"/"+s for s in all_styles_faces]
-all_styles_faces_2=[s for s in os.listdir(faces_npz_dir_2) if s[0]!='.' and len(os.listdir(os.path.join(faces_npz_dir_2,s))) >=2500]
+all_styles_faces_2=[s for s in os.listdir(faces_npz_dir_2) if s[0]!='.' and len(os.listdir(os.path.join(faces_npz_dir_2,s))) >=100]
 #smote_styles_faces_2=[s for s in os.listdir(faces_npz_dir_2) if s[0]!='.' and len(os.listdir(os.path.join(faces_npz_dir_2,s))) >250 and len(os.listdir(os.path.join(faces_npz_dir_2,s))) <2500]
 
 all_styles_birds=[s for s in os.listdir(bird_npz_dir)if s[0]!='.']
@@ -39,6 +39,10 @@ dataset_default_all_styles={
     "art": all_styles,
     "mnist":all_digits,
     "faces2":all_styles_faces_2
+}
+
+style_quantity_dicts={
+    "faces2":{s:7500 for s in all_styles_faces_2}
 }
 
 #raw_image_dir='/scratch/jlb638/images/
