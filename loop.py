@@ -27,7 +27,8 @@ parser = argparse.ArgumentParser(description='get some args')
 parser.add_argument("--name",type=str,default="name")
 parser.add_argument("--save",type=str,default=False,help="whether to save this model")
 parser.add_argument("--dataset",type=str,default="faces2",help="name of dataset (mnist or art or faces or faces2)")
-parser.add_argument("--use_smote",type=bool,default=True,)
+parser.add_argument("--use_smote",type=bool,default=False,help="whether to use the normal dataset but with added synthetic samples")
+parser.add_argument("--oversample",type=bool,default=False,help="whether to use normal images but oversampling the smaller classes")
 parser.add_argument("--genres",nargs='+',type=str,default=[],help="which digits/artistic genres ")
 
 parser.add_argument("--diversity",type=bool,default=False,help="whether to use unconditional diversity loss")
@@ -82,7 +83,7 @@ parser.add_argument("--creativity_start",type=int,default=0,help="epoch when to 
 parser.add_argument("--evaluation_imgs",type=int,default=0,help="how many images to generate at the end for evaluation")
 parser.add_argument("--evaluation_path",type=str,default="./evaluation/",help="where to save evaluation images")
 
-for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,250,4,8]):
+for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,250,4,10]):
     parser.add_argument("--{}".format(names),type=int,default=default)
 
 args = parser.parse_args()
@@ -434,7 +435,10 @@ def generate_from_noise(model,epoch,random_vector,apply_sigmoid):
     plt.savefig('{}/{}/gen_image_at_epoch_{:04d}.png'.format(gen_img_dir,args.name,epoch))
     plt.show()
 
-loader=get_loader(args.max_dim,args.genres,args.quantity,root_dict[args.dataset],not args.use_smote)
+if args.oversample:
+    loader=get_loader_oversample_labels(args.max_dim,style_quantity_dicts[args.dataset],root_dict[args.dataset])
+else:
+    loader=get_loader(args.max_dim,args.genres,args.quantity,root_dict[args.dataset],not args.use_smote)
 
 print("data set length",len([l for l in loader]))
 

@@ -2,7 +2,7 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 
 import tensorflow as tf
-from data_loader import get_loader_labels
+from data_loader import *
 from string_globals import *
 import argparse
 from vgg import VGGPreProcess, Identity
