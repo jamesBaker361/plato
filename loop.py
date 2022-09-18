@@ -77,7 +77,7 @@ parser.add_argument("--smote_maximum",type=int,default=2500,help="amount of samp
 
 parser.add_argument("--creativity",type=bool,default=False,help="whether to use elgammal creatvity loss")
 parser.add_argument("--creativity_lambda",type=float,default=100,help="coefficient on creativty loss")
-parser.add_argument("--classifier_path",type=str,default="../../../../../scratch/jlb638/plato/checkpoints/creativity_3_64",help="path to load classifier from")
+parser.add_argument("--classifier_path",type=str,default="../../../../../scratch/jlb638/plato/checkpoints/cfier_B3",help="path to load classifier from")
 parser.add_argument("--creativity_start",type=int,default=0,help="epoch when to start applying creativity loss")
 
 parser.add_argument("--evaluation_imgs",type=int,default=0,help="how many images to generate at the end for evaluation")
@@ -195,6 +195,19 @@ with strategy.scope():
     creativity_loss=tf.keras.metrics.Mean("creativity_loss",dtype=tf.float32)
 
     def compute_loss(x):
+        '''> The function takes in a batch of images, encodes them into a latent space, decodes them back into
+        the image space, and then computes the loss- this is standard VAE loss
+        
+        Parameters
+        ----------
+        x
+            the input image
+        
+        Returns
+        -------
+            The loss function is being returned.
+        
+        '''
         mean, logvar = model.encode(x)
         z = model.reparameterize(mean, logvar)
         x_logit = model.decode(z,args.apply_sigmoid)
@@ -207,7 +220,20 @@ with strategy.scope():
         return tf.nn.compute_average_loss(per_example_loss, global_batch_size=global_batch_size)
 
     def compute_diversity_loss(samples,z):
-        '''based off of https://arxiv.org/abs/1901.09024
+        '''It computes the average of the ratio of the L2 norm of the difference between the samples and the L2
+        norm of the difference between the latent vectors based off of https://arxiv.org/abs/1901.09024
+        
+        Parameters
+        ----------
+        samples
+            the generated samples
+        z
+            the latent space vector
+        
+        Returns
+        -------
+            The loss is being returned.
+        
         '''
         try:
             batch_size=len(samples)
@@ -221,6 +247,23 @@ with strategy.scope():
         return tf.nn.compute_average_loss(loss, global_batch_size=global_batch_size)
 
     def compute_style_loss(x,extractor,extractor_lambda):
+        '''It takes an image, encodes it, decodes it, and then computes the style loss between the original
+        image and the decoded image
+        
+        Parameters
+        ----------
+        x
+            the input image
+        extractor
+            the style extractor network (vgg, resnet)
+        extractor_lambda
+            a list of weights for each layer of the style extractor.
+        
+        Returns
+        -------
+            The loss function for the style loss.
+        
+        '''
         mean, logvar = model.encode(x)
         z = model.reparameterize(mean, logvar)
         x_logit = model.decode(z,args.apply_sigmoid)
@@ -231,9 +274,34 @@ with strategy.scope():
         return tf.nn.compute_average_loss(reconst,global_batch_size=global_batch_size)
 
     def compute_vgg_style_loss(x):
+        '''It takes a tensor and a style extractor, and returns a function that computes the vgg style loss for
+        that tensor
+        
+        Parameters
+        ----------
+        x
+            the input image
+        
+        Returns
+        -------
+            The loss function for the style loss.
+        
+        '''
         return compute_style_loss(x,vgg_style_extractor,args.vgg_lambda)
 
     def compute_resnet_style_loss(x):
+        '''It takes a tensor and returns a function that computes the resnet style loss of that tensor
+        
+        Parameters
+        ----------
+        x
+            the input image
+        
+        Returns
+        -------
+            The function compute_resnet_style_loss is being returned.
+        
+        '''
         return compute_style_loss(x,resnet_style_extractor,args.resnet_lambda)
 
     if args.gan:
@@ -249,7 +317,24 @@ with strategy.scope():
         args.cycle_steps,
         args.phase_one_pct,
         args.clipnorm)
+
         def compute_gradient_penalty(real_x,fake_x):
+            '''It takes a batch of real images and a batch of fake images, and then it computes the gradient of the
+            discriminator's output with respect to the input, and then it penalizes the discriminator if the
+            gradient is too large, this is for WGAN-GP
+            
+            Parameters
+            ----------
+            real_x
+                The real images
+            fake_x
+                The output of the generator.
+            
+            Returns
+            -------
+                The gradient penalty is being returned.
+            
+            '''
             alpha=tf.random.uniform((args.batch_size,1,1,1),minval=0.0,maxval=1.0)
             differences=fake_x-real_x
             interpolates=real_x+(alpha * differences)
@@ -267,21 +352,25 @@ with strategy.scope():
         print('loaded from ',args.classifier_path)
 
         def compute_creativity_loss(class_labels):
+            '''It computes the cross-entropy loss between the class labels and a uniform distribution
+            
+            Parameters
+            ----------
+            class_labels
+                the output of the classifier, which is a tensor of shape [batch_size, num_classes]
+            
+            Returns
+            -------
+                The loss is being returned.
+            
+            '''
             uniform=tf.fill([args.batch_size,len(args.genres)],1.0/len(args.genres))
             cce = tf.keras.losses.CategoricalCrossentropy(reduction=tf.keras.losses.Reduction.NONE)
             loss=cce(class_labels,uniform)
             return tf.nn.compute_average_loss(args.creativity_lambda * loss, global_batch_size=global_batch_size)
-
-
-
 #end strategy scope
 
 def train_step(x):
-    """Executes one training step and returns the loss.
-
-    This function computes the loss and gradients, and uses the latter to
-    update the model's parameters.
-    """
     with tf.GradientTape() as tape:
         loss = compute_loss(x)
     gradients = tape.gradient(loss, model.trainable_variables)
@@ -320,6 +409,23 @@ def resnet_style_step(x):
     return loss
 
 def fid_step(model,noise,loader):
+    '''It takes a model, a noise vector, and a dataset loader, and returns the FID loss between the model's
+    generated images and the dataset
+    
+    Parameters
+    ----------
+    model
+        the model to be trained
+    noise
+        a tensor of shape (batch_size,noise_dim)
+    loader
+        a tf.data.Dataset object that contains the images you want to compare your model's images to.
+    
+    Returns
+    -------
+        The loss is being returned.
+    
+    '''
     images1=model.sample(noise,False)
     for i in loader.shuffle(1000,reshuffle_each_iteration=True).batch(args.fid_sample_size):
         images2=i
@@ -329,6 +435,21 @@ def fid_step(model,noise,loader):
 
 if args.gan:
     def adversarial_step(x,gen_training=False):
+        '''> We sample a batch of random noise, pass it through the generator, and then pass the generated
+        images and real images through the discriminator. 
+        
+        Parameters
+        ----------
+        x
+            The real images input to discriminator
+        gen_training, optional
+            Whether to train the generator or not.
+        
+        Returns
+        -------
+            The generator and discriminator losses are being returned.
+        
+        '''
         z=tf.random.truncated_normal((args.batch_size,args.latent_dim))
         with tf.GradientTape(persistent=True) as gen_tape, tf.GradientTape(persistent=True) as disc_tape:
             fake_x=model.sample(z,args.apply_sigmoid)
@@ -408,6 +529,20 @@ def distributed_resnet_style_step(x):
 
 
 def generate_and_save_images(model, epoch, test_sample,apply_sigmoid):
+    '''It takes a batch of images, encodes them, samples from the latent space, and then decodes them
+    
+    Parameters
+    ----------
+    model
+        The model that we are training.
+    epoch
+        The current epoch number.
+    test_sample
+        a batch of test images
+    apply_sigmoid
+        If True, the output of the generator will go through a sigmoid function. 
+    
+    '''
     mean, logvar = model.encode(test_sample)
     z = model.reparameterize(mean, logvar)
     print("z shape ",z.shape)
@@ -424,6 +559,22 @@ def generate_and_save_images(model, epoch, test_sample,apply_sigmoid):
     plt.show()
 
 def generate_from_noise(model,epoch,random_vector,apply_sigmoid):
+    '''It takes a model, an epoch number, a random vector, and a boolean flag, and then generates a grid of
+    images from the random vector, and saves the grid to a file.
+    
+    Parameters
+    ----------
+    model
+        the model we're using to generate images
+    epoch
+        the current epoch number
+    random_vector
+        A vector of shape (1,latent_dim) that will be used to generate an image.
+    apply_sigmoid
+        If True, the output of the generator will be passed through a sigmoid function. This is useful if
+    the output of the generator is a probability.
+    
+    '''
     predictions = model.sample(random_vector,apply_sigmoid)
     fig = plt.figure(figsize=(4, 4))
 
@@ -613,8 +764,6 @@ if args.generate_smote:
 
 
 if args.evaluation_imgs >0:
-    import tensorflow_hub as hub
-    super_res = hub.load("https://tfhub.dev/captain-pool/esrgan-tf2/1")
     eval_dir=args.evaluation_path+args.name
     os.makedirs(eval_dir)
     evaluation_latent_vector = tf.random.normal(
@@ -622,8 +771,6 @@ if args.evaluation_imgs >0:
     predictions = model.sample(evaluation_latent_vector,args.apply_sigmoid)
 
     predictions=tf.image.resize(predictions, [256,256])
-
-    #predictions= super_res(predictions)
     
     plt.figure()
 

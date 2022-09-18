@@ -40,6 +40,39 @@ class RandomBrightness(RandomAugmentation):
     
 
 def efficient_cfier(model_level,input_shape,styles,weights="imagenet",activation=True,dropout=False,dense_layers=0,layer_1_n=64,layer_2_n=32,image_rotate=0.0,image_flip=0.0):
+    '''It takes in a model level, input shape, and styles, and returns a model with the specified model
+    level, input shape, and styles
+    
+    Parameters
+    ----------
+    model_level
+        The level of the EfficientNet model to use.
+    input_shape
+        the shape of the input images.
+    styles
+        a list of the styles you want to classify
+    weights, optional
+        "imagenet" or None. If None, the model will be randomly initialized.
+    activation, optional
+        Whether or not to add a softmax activation layer to the end of the model.
+    dropout, optional
+        Whether to add dropout layers to the model.
+    dense_layers, optional
+        number of dense layers to add to the model
+    layer_1_n, optional
+        number of nodes in the first dense layer
+    layer_2_n, optional
+        number of nodes in the second dense layer
+    image_rotate
+        the maximum angle to rotate the image by
+    image_flip
+        the probability of flipping the image horizontally
+    
+    Returns
+    -------
+        A model
+    
+    '''
     if model_level=="dc":
         return dc_net(input_shape,styles,activation)
     elif model_level=="vgg":
@@ -82,6 +115,23 @@ def efficient_cfier(model_level,input_shape,styles,weights="imagenet",activation
     return model
 
 def dc_net(input_shape,styles,activation=True):
+    '''It takes an input shape and a list of styles, and returns a model that takes an image and outputs a
+    probability distribution over the styles
+    
+    Parameters
+    ----------
+    input_shape
+        the shape of the input image
+    styles
+        a list of strings, each string is a style name
+    activation, optional
+        Whether to use a softmax activation at the end of the network.
+    
+    Returns
+    -------
+        A sequential model with the layers defined in the function.
+    
+    '''
     layers=[tf.keras.layers.InputLayer(input_shape=input_shape)]
     width=input_shape[0]
     latent=16
@@ -97,6 +147,35 @@ def dc_net(input_shape,styles,activation=True):
     return tf.keras.Sequential(layers)
 
 def vgg_net(input_shape,styles,weights="imagenet",activation=True):
+    '''> We're creating a model that takes in an image, preprocesses it, runs it through a VGG19 model,
+    flattens the output, and then outputs a vector of length `len(styles)`
+    
+    First, we're creating a VGG19 model with `include_top=False` and `weights="imagenet"`. This means
+    that we're not including the final fully connected layers of the model, and that we're using the
+    pre-trained weights. 
+    
+    Next, we're creating a `tf.keras.Sequential` model. This is a model that is composed of a linear
+    stack of layers. We're adding the following layers to this model:
+    
+    1. An `InputLayer` that takes in an image of shape `input_shape`
+    2. A `VGGPreProcess` layer that preprocesses the image
+    
+    Parameters
+    ----------
+    input_shape
+        The shape of the input image.
+    styles
+        a list of strings, each string is the name of a style.
+    weights, optional
+        The weights to initialize the model with.
+    activation, optional
+        Whether to add a softmax activation to the output layer.
+    
+    Returns
+    -------
+        A model that takes in an image and returns a vector of probabilities for each style.
+    
+    '''
     vgg = tf.keras.applications.VGG19(include_top=False, weights=weights,input_shape=input_shape)
     model=tf.keras.Sequential([
         tf.keras.layers.InputLayer(input_shape=input_shape),
@@ -243,6 +322,21 @@ if __name__=="__main__":
     #end strategy.scope
 
     def train_step(images,labels):
+        '''> We take the images, augment them, pass them through the model, calculate the loss, calculate the
+        gradients, and update the weights
+        
+        Parameters
+        ----------
+        images
+            The images that are passed to the model.
+        labels
+            The ground truth labels for the images.
+        
+        Returns
+        -------
+            The loss being returned.
+        
+        '''
         images=augment_model(images)
         with tf.GradientTape() as tape:
             predicted_labels=cfier(images)
@@ -253,6 +347,20 @@ if __name__=="__main__":
         return loss
 
     def test_step(images,labels):
+        '''> The `test_step` function takes in a batch of images and labels, and returns the loss
+        
+        Parameters
+        ----------
+        images
+            The input images.
+        labels
+            The labels of the images.
+        
+        Returns
+        -------
+            The loss is being returned.
+        
+        '''
         predicted_labels=cfier(images)
         loss=classification_loss(labels,predicted_labels)
         acc_metric.update_state(labels,predicted_labels)
