@@ -24,8 +24,10 @@ import argparse
 
 parser = argparse.ArgumentParser(description='get some args')
 
-parser.add_argument("--name",type=str,default="name")
+parser.add_argument("--name",type=str,default="")
 parser.add_argument("--save",type=str,default=False,help="whether to save this model")
+parser.add_argument("--load",default=False,type=bool,help="if there already exists a saved model with this name, load it")
+parser.add_argument("--loadpath",type=str,default="",help="path to load saved autoencoder from")
 parser.add_argument("--dataset",type=str,default="faces2",help="name of dataset (mnist or art or faces or faces2)")
 parser.add_argument("--use_smote",type=bool,default=False,help="whether to use the normal dataset but with added synthetic samples")
 parser.add_argument("--oversample",type=bool,default=False,help="whether to use normal images but oversampling the smaller classes")
@@ -83,6 +85,8 @@ parser.add_argument("--creativity_start",type=int,default=0,help="epoch when to 
 parser.add_argument("--evaluation_imgs",type=int,default=0,help="how many images to generate at the end for evaluation")
 parser.add_argument("--evaluation_path",type=str,default="./evaluation/",help="where to save evaluation images")
 
+parser.add_argument("--begin_epoch",type=int,default=0,help="in case we want to start at a later epoch")
+
 for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,250,4,10]):
     parser.add_argument("--{}".format(names),type=int,default=default)
 
@@ -96,7 +100,8 @@ num_examples_to_generate = 16
 image_size=(args.max_dim,args.max_dim,3)
 
 current_time = datetime.datetime.now().strftime("%H%M%S")
-args.name+=current_time
+if len(args.name)==0:
+    args.name=current_time
 
 os.makedirs(gen_img_dir+"/"+args.name)
 
@@ -166,6 +171,10 @@ random_vector_for_generation = tf.random.normal(
 
 with strategy.scope():
     model = CVAE(args.latent_dim,args.max_dim)
+    if args.load or len(args.loadpath) != 0:
+        model.encoder=tf.keras.models.load_model(checkpoint_dir+"/"+args.loadpath+"/encoder")
+        model.decoder=tf.keras.models.load_model(checkpoint_dir+"/"+args.loadpath+"/decoder")
+        print("successfully loaded from {}".format(args.loadpath))
     optimizer=get_optimizer(
         args.opt_name,
         args.opt_type,
@@ -452,7 +461,7 @@ if args.gan:
         '''
         z=tf.random.truncated_normal((args.batch_size,args.latent_dim))
         with tf.GradientTape(persistent=True) as gen_tape, tf.GradientTape(persistent=True) as disc_tape:
-            fake_x=model.sample(z,args.apply_sigmoid)
+            fake_x=model.decode(z,args.apply_sigmoid)
 
             fake_labels=disc(fake_x)
             real_labels=disc(x)
@@ -587,7 +596,7 @@ def generate_from_noise(model,epoch,random_vector,apply_sigmoid):
     plt.show()
 
 if args.oversample:
-    loader=get_loader_oversample_labels(args.max_dim,style_quantity_dicts[args.dataset],root_dict[args.dataset])
+    loader=get_loader_oversample(args.max_dim,style_quantity_dicts[args.dataset],root_dict[args.dataset])
 else:
     loader=get_loader(args.max_dim,args.genres,args.quantity,root_dict[args.dataset],not args.use_smote)
 
@@ -606,16 +615,16 @@ for test_batch in test_dataset.take(1):
 train_dataset=strategy.experimental_distribute_dataset(train_dataset)
 test_dataset=strategy.experimental_distribute_dataset(test_dataset)
 
-generate_and_save_images(model, 0, test_sample,False)
-generate_from_noise(model,0,random_vector_for_generation,False)
+generate_and_save_images(model, args.begin_epoch, test_sample,False)
+generate_from_noise(model,args.begin_epoch,random_vector_for_generation,False)
 
 if args.fid:
     fid_score=fid_step(model,random_vector_fid,loader)
     print("FID score {}".format(fid_score))
     with fid_summary_writer.as_default():
-        tf.summary.scalar("fid_score",fid_score,step=0)
+        tf.summary.scalar("fid_score",fid_score,step=args.begin_epoch)
 
-for epoch in range(1, args.epochs + 1):
+for epoch in range(args.begin_epoch+1, args.epochs + 1):
     start_time = time.time()
     for train_x in train_dataset:
         distributed_train_step(train_x)
@@ -734,13 +743,8 @@ if args.fid:
     fid_score=fid_step(model,random_vector_fid,loader)
     print("FID score {}".format(fid_score))
     with fid_summary_writer.as_default():
-        tf.summary.scalar("fid_score",fid_score,step=epoch)
+        tf.summary.scalar("fid_score",fid_score,step=epoch+1)
     fid_loss.reset_states()
-
-checkpoint_path=checkpoint_dir+"/"+args.name
-if args.save:
-    model.save(checkpoint_path)
-    print("saved at ",checkpoint_path)
 
 if args.generate_smote:
     target_root=root_dict[args.dataset]
@@ -779,5 +783,13 @@ if args.evaluation_imgs >0:
         plt.savefig('{}/{}.png'.format(eval_dir,i))
         plt.show()
     
+
+if args.save:
+    save_path=checkpoint_dir+"/"+args.name
+    os.makedirs(save_path,exist_ok=True)
+    model.encoder.save(save_path+"/encoder")
+    print("saved at ",save_path+"/encoder")
+    model.decoder.save(save_path+"/decoder")
+    print("saved at ",save_path+"/decoder")
 
 print("all done!")

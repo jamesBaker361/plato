@@ -41,11 +41,37 @@ class CVAE(tf.keras.Model):
 
     @tf.function
     def sample(self,eps,apply_sigmoid):
+        '''The sample function takes in a random noise vector and returns a generated image
+        
+        Parameters
+        ----------
+        eps
+            a random normal tensor.
+        apply_sigmoid
+            Boolean, whether to apply the sigmoid activation function after the decoder network.
+        
+        Returns
+        -------
+            The decoder is being returned.
+        
+        '''
         if eps is None:
             eps = tf.random.normal(shape=(100, self.latent_dim))
         return self.decode(eps, apply_sigmoid)
 
     def encode(self, x):
+        '''The encoder takes in an input, and returns the mean and log variance of the latent distribution
+        
+        Parameters
+        ----------
+        x
+            the input data
+        
+        Returns
+        -------
+            The mean and log variance of the encoder
+        
+        '''
         mean, logvar = tf.split(self.encoder(x), num_or_size_splits=2, axis=1)
         return mean, logvar
 
@@ -54,6 +80,21 @@ class CVAE(tf.keras.Model):
         return eps * tf.exp(logvar * .5) + mean
 
     def decode(self, z, apply_sigmoid=False):
+        '''The encoder function takes in an image and returns the mean and log of the variance of the latent
+        space. The decoder function takes in a latent vector and returns the logits of the reconstruction
+        
+        Parameters
+        ----------
+        z
+            the latent space representation of the input image
+        apply_sigmoid, optional
+            If true, the output of the decoder is a sigmoid function.
+        
+        Returns
+        -------
+            The logits of the reconstruction.
+        
+        '''
         logits = self.decoder(z)
         if apply_sigmoid:
             probs = tf.sigmoid(logits)
@@ -61,6 +102,19 @@ class CVAE(tf.keras.Model):
         return logits
 
     def call(self,inputs):
+        '''> The encoder takes in an input, and returns a mean and log variance. The reparameterization trick
+        is then used to sample from the distribution, and the decoder is used to reconstruct the input
+        
+        Parameters
+        ----------
+        inputs
+            the input data
+        
+        Returns
+        -------
+            The output of the decoder.
+        
+        '''
         m,l=self.encode(inputs)
         z=self.reparameterize(m,l)
         return self.decode(z)
