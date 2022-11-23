@@ -122,4 +122,5 @@ class CVAE(tf.keras.Model):
 if __name__ =="__main__":
     model=CVAE(32,64)
     #model(tf.random.uniform((1,64,64,3)))
+    #model.encoder.summary()
     model.decoder.summary()

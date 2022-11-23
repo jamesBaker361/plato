@@ -9,8 +9,9 @@ from classifier import get_discriminator
 from cvae import CVAE
 from data_loader import *
 import time
+from random import randrange
 import datetime
-import random
+from c3vae import C3VAE
 from fid import calculate_fid
 from vgg import *
 from optimizer_config import get_optimizer
@@ -19,6 +20,8 @@ from smote_data import *
 logger = logging.getLogger()
 old_level = logger.level
 logger.setLevel(100)
+
+print(datetime.datetime.now().strftime("%m/%d/%Y %H:%M:%S"))
 
 import argparse
 
@@ -45,6 +48,9 @@ parser.add_argument("--vgg_lambda",type=float,default=0.1,help="coefficient on v
 parser.add_argument("--resnet",type=bool,default=False,help="whether to use resnet reconstruction loss too")
 parser.add_argument("--resnet_blocks",type=str,nargs='+',default=["conv2_block1_out"],help="which blocks to use for resnet extractor")
 parser.add_argument("--resnet_lambda",type=float,default=0.1,help="coefficient on resnet style loss")
+
+parser.add_argument("--c3vae",type=bool,default=False,help="whether to use c3vae")
+parser.add_argument("--class_latent_dim",type=int,default=32)
 
 parser.add_argument("--logdir",type=str,default='logs/gradient_tape/')
 
@@ -86,6 +92,9 @@ parser.add_argument("--evaluation_imgs",type=int,default=0,help="how many images
 parser.add_argument("--evaluation_path",type=str,default="./evaluation/",help="where to save evaluation images")
 
 parser.add_argument("--begin_epoch",type=int,default=0,help="in case we want to start at a later epoch")
+parser.add_argument("--debug",type=bool, default=False, help="whether to print out more debug statemtns")
+parser.add_argument("--validate",type=bool, default=False, help="whether to use validation set for evaluation")
+parser.add_argument("--test", type=bool,default=False,help="whether to use test set for evaluation")
 
 for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,250,4,10]):
     parser.add_argument("--{}".format(names),type=int,default=default)
@@ -103,7 +112,7 @@ current_time = datetime.datetime.now().strftime("%H%M%S")
 if len(args.name)==0:
     args.name=current_time
 
-os.makedirs(gen_img_dir+"/"+args.name)
+os.makedirs(gen_img_dir+"/"+args.name,exist_ok=True)
 
 physical_devices=tf.config.list_physical_devices('GPU')
 for device in physical_devices:
@@ -120,15 +129,26 @@ if len(logical_gpus)>0:
 else:
     global_batch_size=args.batch_size
 
+def print_debug(msg,*anon_args,**kwargs):
+    if args.debug:
+        print(msg,*anon_args,**kwargs)
+
+def print_shape(msg, tensor):
+    if args.c3vae:
+        print_debug(msg, tf.shape(tensor[0], tf.shape(tensor[1])))
+    else:
+        print_debug(msg,tf.shape(tensor))
+
 actual_length=len(get_npz_paths(args.max_dim,args.genres, root_dict[args.dataset]))
 actual_length=min(actual_length,args.quantity)
-print("actual length of dataset= {}".format(actual_length))
+print_debug("actual length of dataset= {}".format(actual_length))
 
 if args.kl_weight==0.0:
     args.kl_weight=actual_length/global_batch_size
 
 train_log_dir = args.logdir + args.name + '/train'
 test_log_dir = args.logdir + args.name + '/test'
+validate_log_dir=args.logdir+args.name+'/validate'
 diversity_log_dir=args.logdir + args.name + '/diversity'
 vgg_log_dir=args.logdir+args.name+"/vgg"
 resnet_log_dir=args.logdir+args.name+"/resnet"
@@ -142,6 +162,7 @@ logqz_x_log_dir=args.logdir + args.name + '/logqz_x'
 
 train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 test_summary_writer = tf.summary.create_file_writer(test_log_dir)
+validate_summary_writer=tf.summary.create_file_writer(validate_log_dir)
 diversity_summary_writer=tf.summary.create_file_writer(diversity_log_dir)
 vgg_summary_writer=tf.summary.create_file_writer(vgg_log_dir)
 resnet_summary_writer=tf.summary.create_file_writer(resnet_log_dir)
@@ -171,6 +192,8 @@ random_vector_for_generation = tf.random.normal(
 
 with strategy.scope():
     model = CVAE(args.latent_dim,args.max_dim)
+    if args.c3vae:
+        model=C3VAE(len(args.genres),args.class_latent_dim,args.latent_dim,args.max_dim)
     if args.load or len(args.loadpath) != 0:
         model.encoder=tf.keras.models.load_model(checkpoint_dir+"/"+args.loadpath+"/encoder")
         model.decoder=tf.keras.models.load_model(checkpoint_dir+"/"+args.loadpath+"/decoder")
@@ -194,6 +217,7 @@ with strategy.scope():
 
     train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
     test_loss = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
+    validate_loss=tf.keras.metrics.Mean('validate_loss',dtype=tf.float32)
     diversity_loss=tf.keras.metrics.Mean("diversity_loss",dtype=tf.float32)
     vgg_loss=tf.keras.metrics.Mean("vgg_loss",dtype=tf.float32)
     resnet_loss=tf.keras.metrics.Mean("resnet_loss",dtype=tf.float32)
@@ -217,9 +241,15 @@ with strategy.scope():
             The loss function is being returned.
         
         '''
-        mean, logvar = model.encode(x)
-        z = model.reparameterize(mean, logvar)
-        x_logit = model.decode(z,args.apply_sigmoid)
+        if args.c3vae:
+            [x,x_class]=x
+            mean, logvar = model.encode(x)
+            z = model.reparameterize(mean, logvar)
+            x_logit = model.decode(z,x_class,args.apply_sigmoid)
+        else:
+            mean, logvar = model.encode(x)
+            z = model.reparameterize(mean, logvar)
+            x_logit = model.decode(z,args.apply_sigmoid)
         cross_ent=(x-x_logit)**2
         reconst = tf.reduce_sum(cross_ent, axis=[1, 2, 3])
         kl= -0.5* args.kl_weight * tf.reduce_sum(1+logvar - mean**2 - tf.exp(logvar),axis=1)
@@ -247,7 +277,10 @@ with strategy.scope():
         try:
             batch_size=len(samples)
         except TypeError:
-            batch_size=samples.shape[0]
+            try:
+                batch_size=samples.shape[0]
+            except:
+                batch_size=tf.shape(samples)[0]
         _loss=tf.constant(0.0,dtype=tf.float32) #[-1.0* tf.reduce_mean(tf.square(tf.subtract(samples, samples)))]
         for i in range(batch_size):
             for j in range(i+1,batch_size):
@@ -273,9 +306,15 @@ with strategy.scope():
             The loss function for the style loss.
         
         '''
-        mean, logvar = model.encode(x)
-        z = model.reparameterize(mean, logvar)
-        x_logit = model.decode(z,args.apply_sigmoid)
+        if args.c3vae:
+            [x,x_class]=x
+            mean, logvar = model.encode(x)
+            z = model.reparameterize(mean, logvar)
+            x_logit = model.decode(z,x_class,args.apply_sigmoid)
+        else:
+            mean, logvar = model.encode(x)
+            z = model.reparameterize(mean, logvar)
+            x_logit = model.decode(z,args.apply_sigmoid)
         x_style=extractor(x)
         x_logit_style=extractor(x_logit)
         cross_ent=(x_style-x_logit_style)**2
@@ -358,10 +397,10 @@ with strategy.scope():
 
     if args.creativity:
         classifier=tf.keras.models.load_model(args.classifier_path)
-        print('loaded from ',args.classifier_path)
+        print('loaded classifier from ',args.classifier_path)
 
         def compute_creativity_loss(class_labels):
-            '''It computes the cross-entropy loss between the class labels and a uniform distribution
+            '''It computes the cross-entropy loss between the predicted class labels and a uniform distribution
             
             Parameters
             ----------
@@ -390,6 +429,11 @@ def train_step(x):
 def test_step(x):
     loss=compute_loss(x)
     test_loss(loss)
+    return loss
+
+def validate_step(x):
+    loss=compute_loss(x)
+    validate_loss(loss)
     return loss
 
 def diversity_step(z):
@@ -438,6 +482,8 @@ def fid_step(model,noise,loader):
     images1=model.sample(noise,False)
     for i in loader.shuffle(1000,reshuffle_each_iteration=True).batch(args.fid_sample_size):
         images2=i
+        if args.c3vae:
+            [images2, _]= images2
         break
     loss=calculate_fid(images1,images2,(args.max_dim,args.max_dim,3))
     return loss
@@ -490,9 +536,15 @@ if args.gan:
 if args.creativity:
     def creatvity_step(x):
         with tf.GradientTape(persistent=True) as tape:
-            mean, logvar = model.encode(x)
-            z = model.reparameterize(mean, logvar)
-            x_logit = model.decode(z,args.apply_sigmoid)
+            if args.c3vae:
+                [x,x_class]=x
+                mean, logvar = model.encode(x)
+                z = model.reparameterize(mean, logvar)
+                x_logit = model.decode(z,x_class,args.apply_sigmoid)
+            else:
+                mean, logvar = model.encode(x)
+                z = model.reparameterize(mean, logvar)
+                x_logit = model.decode(z,args.apply_sigmoid)
             class_labels=classifier(x_logit)
             loss=compute_creativity_loss(class_labels)
         gradients = tape.gradient(loss, model.trainable_variables)
@@ -522,7 +574,11 @@ def distributed_train_step(x):
 
 @tf.function
 def distributed_test_step(x):
-  return strategy.run(test_step, args=(x,))
+    return strategy.run(test_step, args=(x,))
+
+@tf.function
+def distributed_validate_step(x):
+    return strategy.run(validate_step,args=(x,))
 
 @tf.function
 def distributed_vgg_style_step(x):
@@ -552,11 +608,8 @@ def generate_and_save_images(model, epoch, test_sample,apply_sigmoid):
         If True, the output of the generator will go through a sigmoid function. 
     
     '''
-    mean, logvar = model.encode(test_sample)
-    z = model.reparameterize(mean, logvar)
-    print("z shape ",z.shape)
-    predictions = model.sample(z,apply_sigmoid)
-    print("real prediction shape",predictions.shape)
+    predictions = model(test_sample)
+    print_debug("real prediction shape",predictions.shape)
     fig = plt.figure(figsize=(4, 4))
 
     for i in range(predictions.shape[0]):
@@ -584,7 +637,12 @@ def generate_from_noise(model,epoch,random_vector,apply_sigmoid):
     the output of the generator is a probability.
     
     '''
-    predictions = model.sample(random_vector,apply_sigmoid)
+    if args.c3vae:
+        indices=[randrange(len(args.genres)) for _ in range(num_examples_to_generate)]
+        random_classes=tf.one_hot(indices,len(args.genres))
+        predictions=model.sample(random_vector,apply_sigmoid, random_classes)
+    else:
+        predictions = model.sample(random_vector,apply_sigmoid)
     fig = plt.figure(figsize=(4, 4))
 
     for i in range(predictions.shape[0]):
@@ -595,25 +653,48 @@ def generate_from_noise(model,epoch,random_vector,apply_sigmoid):
     plt.savefig('{}/{}/gen_image_at_epoch_{:04d}.png'.format(gen_img_dir,args.name,epoch))
     plt.show()
 
-if args.oversample:
-    loader=get_loader_oversample(args.max_dim,style_quantity_dicts[args.dataset],root_dict[args.dataset])
+sq_dict={k:v for k,v in style_quantity_dicts[args.dataset].items() if k in set(args.genres)}
+
+if args.oversample and args.c3vae:
+    loader=get_loader_oversample_labels(args.max_dim,sq_dict,root_dict[args.dataset])
+elif args.oversample:
+    loader=get_loader_oversample(args.max_dim,sq_dict,root_dict[args.dataset])
+elif args.c3vae:
+    loader=get_loader_labels(args.max_dim,sq_dict,args.quantity,root_dict[args.dataset],not args.use_smote)
 else:
     loader=get_loader(args.max_dim,args.genres,args.quantity,root_dict[args.dataset],not args.use_smote)
 
-print("data set length",len([l for l in loader]))
+test_dataset = loader.enumerate().filter(lambda x,y: x % 10== 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
 
-test_dataset = loader.enumerate().filter(lambda x,y: x % args.test_split == 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
+validate_dataset = loader.enumerate().filter(lambda x,y: x % 10 == 1).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
 
-train_dataset = loader.enumerate().filter(lambda x,y: x % args.test_split != 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
+print_debug("test cardinality ",len([_ for _ in test_dataset]))
+
+train_dataset = loader.enumerate().filter(lambda x,y: x % 10 >1).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
+
+print_debug("train cardinality ",len([_ for _ in train_dataset]))
+
+print_debug("dataset element_spec", train_dataset.element_spec)
 
 # Pick a sample of the test set for generating output images
 assert args.batch_size >= num_examples_to_generate
 for test_batch in test_dataset.take(1):
-    test_sample = test_batch[0:num_examples_to_generate, :, :, :]
+    print_debug('num_examples to generate ', num_examples_to_generate)
+    if args.c3vae:
+        test_sample = [test_batch[0][0:num_examples_to_generate, :, :, :],test_batch[1][0:num_examples_to_generate]]
+    else:
+        test_sample = test_batch[0:num_examples_to_generate, :, :, :]
     break
 
+for validate_batch in validate_dataset.take(1):
+    if args.c3vae:
+        validate_sample=[validate_batch[0][0:num_examples_to_generate, :, :, :],validate_batch[1][0:num_examples_to_generate]]
+    else:
+        validate_sample=validate_batch[0:num_examples_to_generate, :, :, :]
+    break
 train_dataset=strategy.experimental_distribute_dataset(train_dataset)
 test_dataset=strategy.experimental_distribute_dataset(test_dataset)
+validate_dataset=strategy.experimental_distribute_dataset(validate_dataset)
 
 generate_and_save_images(model, args.begin_epoch, test_sample,False)
 generate_from_noise(model,args.begin_epoch,random_vector_for_generation,False)
@@ -673,16 +754,22 @@ for epoch in range(args.begin_epoch+1, args.epochs + 1):
         disc_loss.reset_states()
         gen_loss.reset_states()
 
-    for test_x in test_dataset:
-        distributed_test_step(test_x)
-    elbo = -test_loss.result()
-
-    with test_summary_writer.as_default():
-        tf.summary.scalar('loss', test_loss.result(), step=epoch)
+    if args.validate:
+        for validate_x in validate_dataset:
+            distributed_validate_step(validate_x)
+        elbo = -validate_loss.result()
+        with test_summary_writer.as_default():
+            tf.summary.scalar('loss', validate_loss.result(),step=epoch)
+    if args.test:
+        for test_x in test_dataset:
+            distributed_test_step(test_x)
+        elbo = -test_loss.result()
+        with test_summary_writer.as_default():
+            tf.summary.scalar('loss', test_loss.result(), step=epoch)
 
     display.clear_output(wait=False)
-    print('Epoch: {}, Test set ELBO: {}, time elapse for current epoch: {}'
-                .format(epoch, elbo, end_time - start_time))
+    print('Epoch: {}, time elapse for current epoch: {}'
+                .format(epoch,  end_time - start_time))
     if epoch %5==0:
         generate_and_save_images(model, epoch, test_sample,args.apply_sigmoid)
         generate_from_noise(model,epoch,random_vector_for_generation,args.apply_sigmoid)
@@ -769,7 +856,7 @@ if args.generate_smote:
 
 if args.evaluation_imgs >0:
     eval_dir=args.evaluation_path+args.name
-    os.makedirs(eval_dir)
+    os.makedirs(eval_dir,exist_ok=True)
     evaluation_latent_vector = tf.random.normal(
         shape=[args.evaluation_imgs, args.latent_dim])
     predictions = model.sample(evaluation_latent_vector,args.apply_sigmoid)
