@@ -40,7 +40,7 @@ class CVAE(tf.keras.Model):
         )
 
     @tf.function
-    def sample(self,eps,apply_sigmoid):
+    def sample(self,eps=None,apply_sigmoid=False):
         '''The sample function takes in a random noise vector and returns a generated image
         
         Parameters
@@ -55,8 +55,9 @@ class CVAE(tf.keras.Model):
             The decoder is being returned.
         
         '''
+        batch=100
         if eps is None:
-            eps = tf.random.normal(shape=(100, self.latent_dim))
+            eps = tf.random.normal(shape=(batch, self.latent_dim))
         return self.decode(eps, apply_sigmoid)
 
     def encode(self, x):
