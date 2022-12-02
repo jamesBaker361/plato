@@ -116,8 +116,13 @@ args = parser.parse_args()
 
 def objective(trial):
     if args.optuna:
-        args.class_latent_dim=trial.suggest_categorical('class_latent_dim',[16,32,64])
-        args.patch_size=trial.suggest_categorical('patch_size', [4,8,16,32])
+        if args.attvae:
+            args.class_latent_dim=trial.suggest_categorical('class_latent_dim',[16,32,64])
+            args.patch_size=trial.suggest_categorical('patch_size', [4,8,16,32])
+            args.num_layers=trial.suggest_int("num_layers",3,6)
+            args.d_encoder=trial.suggest_categorical("d_encoder",[16,32,64,128])
+            args.d_decoder=trial.suggest_categorical("d_decoder",[16,32,64,128])
+
     if len(args.genres)==0:
         args.genres=dataset_default_all_styles[args.dataset]
 
