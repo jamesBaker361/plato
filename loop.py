@@ -19,6 +19,8 @@ from optimizer_config import get_optimizer
 import logging
 from smote_data import *
 from data_helper import *
+from generate_img_helpers import *
+from  step_helpers import *
 logger = logging.getLogger()
 old_level = logger.level
 logger.setLevel(100)
@@ -104,277 +106,296 @@ parser.add_argument("--debug",type=bool, default=False, help="whether to print o
 parser.add_argument("--validate",type=bool, default=False, help="whether to use validation set for evaluation")
 parser.add_argument("--test", type=bool,default=False,help="whether to use test set for evaluation")
 
+parser.add_argument("--optuna", type=bool, default=False, help='whether to use optuna for hyperparameter search')
+parser.add_argument("--optuna_metric", type=str, default="mse",help="metric to optimize optuna for (mse, fid or elbo)")
+
 for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,250,4,10]):
     parser.add_argument("--{}".format(names),type=int,default=default)
 
 args = parser.parse_args()
 
-if len(args.genres)==0:
-    args.genres=dataset_default_all_styles[args.dataset]
+def objective(trial):
+    if args.optuna:
+        args.class_latent_dim=trial.suggest_categorical('class_latent_dim',[16,32,64])
+        args.patch_size=trial.suggest_categorical('patch_size', [4,8,16,32])
+    if len(args.genres)==0:
+        args.genres=dataset_default_all_styles[args.dataset]
 
-num_examples_to_generate = 16
+    num_examples_to_generate = 16
 
-image_size=(args.max_dim,args.max_dim,3)
+    image_size=(args.max_dim,args.max_dim,3)
 
-current_time = datetime.datetime.now().strftime("%H%M%S")
-if len(args.name)==0:
-    args.name=current_time
+    current_time = datetime.datetime.now().strftime("%H%M%S")
+    if len(args.name)==0:
+        args.name=current_time
 
-os.makedirs(gen_img_dir+"/"+args.name,exist_ok=True)
+    os.makedirs(gen_img_dir+"/"+args.name,exist_ok=True)
 
-physical_devices=tf.config.list_physical_devices('GPU')
-for device in physical_devices:
-    try:
-        tf.config.experimental.set_memory_growth(device,True)
-    except  RuntimeError as e:
-        print(e)
-
-logical_gpus = tf.config.list_logical_devices('GPU')
-strategy = tf.distribute.MirroredStrategy()
-
-if len(logical_gpus)>0:
-    global_batch_size=len(logical_gpus)*args.batch_size
-else:
-    global_batch_size=args.batch_size
-
-def print_debug(msg,*anon_args,**kwargs):
-    if args.debug:
-        print(msg,*anon_args,**kwargs)
-
-def print_shape(msg, tensor):
-    if args.c3vae:
-        print_debug(msg, tf.shape(tensor[0], tf.shape(tensor[1])))
-    else:
-        print_debug(msg,tf.shape(tensor))
-
-actual_length=len(get_npz_paths(args.max_dim,args.genres, root_dict[args.dataset]))
-actual_length=min(actual_length,args.quantity)
-print_debug("actual length of dataset= {}".format(actual_length))
-
-if args.kl_weight==0.0:
-    args.kl_weight=actual_length/global_batch_size
-
-train_log_dir = args.logdir + args.name + '/train'
-test_log_dir = args.logdir + args.name + '/test'
-validate_log_dir=args.logdir+args.name+'/validate'
-diversity_log_dir=args.logdir + args.name + '/diversity'
-vgg_log_dir=args.logdir+args.name+"/vgg"
-resnet_log_dir=args.logdir+args.name+"/resnet"
-creativity_log_dir=args.logdir+args.name+"/creativity"
-
-
-
-logpx_z_log_dir=args.logdir + args.name + '/logpx_z'
-logpz_log_dir=args.logdir + args.name + '/logpz'
-logqz_x_log_dir=args.logdir + args.name + '/logqz_x'
-
-train_summary_writer = tf.summary.create_file_writer(train_log_dir)
-test_summary_writer = tf.summary.create_file_writer(test_log_dir)
-validate_summary_writer=tf.summary.create_file_writer(validate_log_dir)
-diversity_summary_writer=tf.summary.create_file_writer(diversity_log_dir)
-vgg_summary_writer=tf.summary.create_file_writer(vgg_log_dir)
-resnet_summary_writer=tf.summary.create_file_writer(resnet_log_dir)
-creativity_summary_writer=tf.summary.create_file_writer(creativity_log_dir)
-
-if args.fid:
-    fid_log_dir=args.logdir+args.name+"/fid"
-    fid_summary_writer=tf.summary.create_file_writer(fid_log_dir)
-    random_vector_fid=tf.random.normal(shape=[args.fid_sample_size, args.latent_dim])
-
-if args.gan:
-    gp_log_dir=args.logdir+args.name+"/gp"
-    disc_log_dir=args.logdir+args.name+"/discriminator_loss"
-    gen_log_dir=args.logdir+args.name+"/generator_loss"
-
-    gp_summary_writer=tf.summary.create_file_writer(gp_log_dir)
-    disc_summary_writer=tf.summary.create_file_writer(disc_log_dir)
-    gen_summary_writer=tf.summary.create_file_writer(gen_log_dir)
-
-
-# keeping the random vector constant for generation (prediction) so
-# it will be easier to see the improvement.
-random_vector_for_generation = tf.random.normal(
-        shape=[num_examples_to_generate, args.latent_dim])
-
-
-
-with strategy.scope():
-    model = CVAE(args.latent_dim,args.max_dim)
-    if args.c3vae:
-        model=C3VAE(len(args.genres),args.class_latent_dim,args.latent_dim,args.max_dim)
-    if args.attvae:
-        model=AttentionVAE(args.patch_size,args.num_layers,args.d_encoder,args.d_decoder,args.latent_dim,args.max_dim)
-    if args.load or len(args.loadpath) != 0:
-        model.encoder=tf.keras.models.load_model(checkpoint_dir+"/"+args.loadpath+"/encoder")
-        model.decoder=tf.keras.models.load_model(checkpoint_dir+"/"+args.loadpath+"/decoder")
-        print("successfully loaded from {}".format(args.loadpath))
-    optimizer=get_optimizer(
-        args.opt_name,
-        args.opt_type,
-        args.init_lr,
-        args.max_lr,
-        args.min_mom,
-        args.max_mom,
-        args.decay_rate,
-        args.cycle_steps,
-        args.phase_one_pct,
-        args.clipnorm)
-    if args.vgg_style:
-        vgg_style_extractor=vgg_layers(args.blocks,image_size)
-
-    if args.resnet:
-        resnet_style_extractor=resnet_layers(args.resnet_blocks,image_size)
-
-    train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
-    test_loss = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
-    validate_loss=tf.keras.metrics.Mean('validate_loss',dtype=tf.float32)
-    diversity_loss=tf.keras.metrics.Mean("diversity_loss",dtype=tf.float32)
-    vgg_loss=tf.keras.metrics.Mean("vgg_loss",dtype=tf.float32)
-    resnet_loss=tf.keras.metrics.Mean("resnet_loss",dtype=tf.float32)
-    fid_loss=tf.keras.metrics.Mean("fid_loss",dtype=tf.float32)
-    gp_loss=tf.keras.metrics.Mean("gp_loss",dtype=tf.float32)
-    disc_loss=tf.keras.metrics.Mean("disc_loss",dtype=tf.float32)
-    gen_loss=tf.keras.metrics.Mean("gen_loss",dtype=tf.float32)
-    creativity_loss=tf.keras.metrics.Mean("creativity_loss",dtype=tf.float32)
-
-    def compute_loss(x):
-        '''> The function takes in a batch of images, encodes them into a latent space, decodes them back into
-        the image space, and then computes the loss- this is standard VAE loss
-        
-        Parameters
-        ----------
-        x
-            the input image
-        
-        Returns
-        -------
-            The loss function is being returned.
-        
-        '''
-        if args.c3vae:
-            [x,x_class]=x
-            mean, logvar = model.encode(x)
-            z = model.reparameterize(mean, logvar)
-            x_logit = model.decode(z,x_class,args.apply_sigmoid)
-        else:
-            mean, logvar = model.encode(x)
-            z = model.reparameterize(mean, logvar)
-            x_logit = model.decode(z,args.apply_sigmoid)
-        cross_ent=(x-x_logit)**2
-        reconst = tf.reduce_sum(cross_ent, axis=[1, 2, 3])
-        kl= -0.5* args.kl_weight * tf.reduce_sum(1+logvar - mean**2 - tf.exp(logvar),axis=1)
-
-        per_example_loss= reconst+kl
-
-        return tf.nn.compute_average_loss(per_example_loss, global_batch_size=global_batch_size)
-
-    def compute_diversity_loss(samples,z):
-        '''It computes the average of the ratio of the L2 norm of the difference between the samples and the L2
-        norm of the difference between the latent vectors based off of https://arxiv.org/abs/1901.09024
-        
-        Parameters
-        ----------
-        samples
-            the generated samples
-        z
-            the latent space vector
-        
-        Returns
-        -------
-            The loss is being returned.
-        
-        '''
+    physical_devices=tf.config.list_physical_devices('GPU')
+    for device in physical_devices:
         try:
-            batch_size=len(samples)
-        except TypeError:
-            try:
-                batch_size=samples.shape[0]
-            except:
-                batch_size=tf.shape(samples)[0]
-        _loss=tf.constant(0.0,dtype=tf.float32) #[-1.0* tf.reduce_mean(tf.square(tf.subtract(samples, samples)))]
-        for i in range(batch_size):
-            for j in range(i+1,batch_size):
-                _loss+=tf.norm(samples[i]-samples[j])/tf.norm(z[i]-z[j])
-        loss=[-_loss*args.lambd]
-        return tf.nn.compute_average_loss(loss, global_batch_size=global_batch_size)
+            tf.config.experimental.set_memory_growth(device,True)
+        except  RuntimeError as e:
+            print(e)
 
-    def compute_style_loss(x,extractor,extractor_lambda):
-        '''It takes an image, encodes it, decodes it, and then computes the style loss between the original
-        image and the decoded image
-        
-        Parameters
-        ----------
-        x
-            the input image
-        extractor
-            the style extractor network (vgg, resnet)
-        extractor_lambda
-            a list of weights for each layer of the style extractor.
-        
-        Returns
-        -------
-            The loss function for the style loss.
-        
-        '''
+    logical_gpus = tf.config.list_logical_devices('GPU')
+    strategy = tf.distribute.MirroredStrategy()
+
+    if len(logical_gpus)>0:
+        global_batch_size=len(logical_gpus)*args.batch_size
+    else:
+        global_batch_size=args.batch_size
+
+    def print_debug(msg,*anon_args,**kwargs):
+        if args.debug:
+            print(msg,*anon_args,**kwargs)
+
+    def print_shape(msg, tensor):
         if args.c3vae:
-            [x,x_class]=x
-            mean, logvar = model.encode(x)
-            z = model.reparameterize(mean, logvar)
-            x_logit = model.decode(z,x_class,args.apply_sigmoid)
+            print_debug(msg, tf.shape(tensor[0], tf.shape(tensor[1])))
         else:
-            mean, logvar = model.encode(x)
-            z = model.reparameterize(mean, logvar)
-            x_logit = model.decode(z,args.apply_sigmoid)
-        x_style=extractor(x)
-        x_logit_style=extractor(x_logit)
-        cross_ent=(x_style-x_logit_style)**2
-        reconst=tf.reduce_sum(extractor_lambda * cross_ent,axis=[1,2,3])
-        return tf.nn.compute_average_loss(reconst,global_batch_size=global_batch_size)
+            print_debug(msg,tf.shape(tensor))
 
-    def compute_vgg_style_loss(x):
-        '''It takes a tensor and a style extractor, and returns a function that computes the vgg style loss for
-        that tensor
-        
-        Parameters
-        ----------
-        x
-            the input image
-        
-        Returns
-        -------
-            The loss function for the style loss.
-        
-        '''
-        return compute_style_loss(x,vgg_style_extractor,args.vgg_lambda)
+    actual_length=len(get_npz_paths(args.max_dim,args.genres, root_dict[args.dataset]))
+    actual_length=min(actual_length,args.quantity)
+    print_debug("actual length of dataset= {}".format(actual_length))
 
-    def compute_resnet_style_loss(x):
-        '''It takes a tensor and returns a function that computes the resnet style loss of that tensor
-        
-        Parameters
-        ----------
-        x
-            the input image
-        
-        Returns
-        -------
-            The function compute_resnet_style_loss is being returned.
-        
-        '''
-        return compute_style_loss(x,resnet_style_extractor,args.resnet_lambda)
+    if args.kl_weight==0.0:
+        args.kl_weight=actual_length/global_batch_size
+
+    train_log_dir = args.logdir + args.name + '/train'
+    test_log_dir = args.logdir + args.name + '/test'
+    validate_log_dir=args.logdir+args.name+'/validate'
+    diversity_log_dir=args.logdir + args.name + '/diversity'
+    vgg_log_dir=args.logdir+args.name+"/vgg"
+    resnet_log_dir=args.logdir+args.name+"/resnet"
+    creativity_log_dir=args.logdir+args.name+"/creativity"
+
+
+
+    logpx_z_log_dir=args.logdir + args.name + '/logpx_z'
+    logpz_log_dir=args.logdir + args.name + '/logpz'
+    logqz_x_log_dir=args.logdir + args.name + '/logqz_x'
+
+    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+    test_summary_writer = tf.summary.create_file_writer(test_log_dir)
+    validate_summary_writer=tf.summary.create_file_writer(validate_log_dir)
+    diversity_summary_writer=tf.summary.create_file_writer(diversity_log_dir)
+    vgg_summary_writer=tf.summary.create_file_writer(vgg_log_dir)
+    resnet_summary_writer=tf.summary.create_file_writer(resnet_log_dir)
+    creativity_summary_writer=tf.summary.create_file_writer(creativity_log_dir)
+
+    if args.fid:
+        random_vector_fid=tf.random.normal(shape=[args.fid_sample_size, args.latent_dim])
+        if args.test:
+            fid_test_log_dir=args.logdir+args.name+"/fid_test"
+            fid_test_summary_writer=tf.summary.create_file_writer(fid_test_log_dir)
+        if args.validate:
+            fid_validate_log_dir=args.logdir+args.name+"/fid_validate"
+            fid_validate_summary_writer=tf.summary.create_file_writer(fid_validate_log_dir)
 
     if args.gan:
-        disc=get_discriminator(args.level,(args.max_dim,args.max_dim,3),args.weights)
-        disc_optimizer=get_optimizer(
-        args.opt_name,
-        args.opt_type,
-        args.init_lr,
-        args.max_lr,
-        args.min_mom,
-        args.max_mom,
-        args.decay_rate,
-        args.cycle_steps,
-        args.phase_one_pct,
-        args.clipnorm)
+        gp_log_dir=args.logdir+args.name+"/gp"
+        disc_log_dir=args.logdir+args.name+"/discriminator_loss"
+        gen_log_dir=args.logdir+args.name+"/generator_loss"
+
+        gp_summary_writer=tf.summary.create_file_writer(gp_log_dir)
+        disc_summary_writer=tf.summary.create_file_writer(disc_log_dir)
+        gen_summary_writer=tf.summary.create_file_writer(gen_log_dir)
+
+
+    # keeping the random vector constant for generation (prediction) so
+    # it will be easier to see the improvement.
+    random_vector_for_generation = tf.random.normal(
+            shape=[num_examples_to_generate, args.latent_dim])
+
+
+
+    with strategy.scope():
+        disc=None
+        classifier = None
+        disc_optimizer = None
+        vgg_style_extractor= None
+        resnet_style_extractor=None
+        model = CVAE(args.latent_dim,args.max_dim)
+        if args.c3vae:
+            model=C3VAE(len(args.genres),args.class_latent_dim,args.latent_dim,args.max_dim)
+        if args.attvae:
+            print(strategy)
+            model=AttentionVAE(args.patch_size,args.num_layers,args.d_encoder,args.d_decoder,args.latent_dim,args.max_dim,strategy)
+            model(tf.random.uniform((1,args.max_dim,args.max_dim,3)))
+        if args.load or len(args.loadpath) != 0:
+            model.encoder=tf.keras.models.load_model(checkpoint_dir+"/"+args.loadpath+"/encoder")
+            model.decoder=tf.keras.models.load_model(checkpoint_dir+"/"+args.loadpath+"/decoder")
+            print("successfully loaded from {}".format(args.loadpath))
+        optimizer=get_optimizer(
+            args.opt_name,
+            args.opt_type,
+            args.init_lr,
+            args.max_lr,
+            args.min_mom,
+            args.max_mom,
+            args.decay_rate,
+            args.cycle_steps,
+            args.phase_one_pct,
+            args.clipnorm)
+        if args.vgg_style:
+            vgg_style_extractor=vgg_layers(args.blocks,image_size)
+
+        if args.resnet:
+            resnet_style_extractor=resnet_layers(args.resnet_blocks,image_size)
+
+        train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
+        test_loss = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
+        validate_loss=tf.keras.metrics.Mean('validate_loss',dtype=tf.float32)
+        diversity_loss=tf.keras.metrics.Mean("diversity_loss",dtype=tf.float32)
+        vgg_loss=tf.keras.metrics.Mean("vgg_loss",dtype=tf.float32)
+        resnet_loss=tf.keras.metrics.Mean("resnet_loss",dtype=tf.float32)
+        fid_test_loss=tf.keras.metrics.Mean("fid_test_loss",dtype=tf.float32)
+        fid_validate_loss=tf.keras.metrics.Mean("fid_validate_loss",dtype=tf.float32)
+        gp_loss=tf.keras.metrics.Mean("gp_loss",dtype=tf.float32)
+        disc_loss=tf.keras.metrics.Mean("disc_loss",dtype=tf.float32)
+        gen_loss=tf.keras.metrics.Mean("gen_loss",dtype=tf.float32)
+        creativity_loss=tf.keras.metrics.Mean("creativity_loss",dtype=tf.float32)
+
+        def compute_loss(x):
+            '''> The function takes in a batch of images, encodes them into a latent space, decodes them back into
+            the image space, and then computes the loss- this is standard VAE loss
+            
+            Parameters
+            ----------
+            x
+                the input image
+            
+            Returns
+            -------
+                The loss function is being returned.
+            
+            '''
+            if args.c3vae:
+                [x,x_class]=x
+                mean, logvar = model.encode(x)
+                z = model.reparameterize(mean, logvar)
+                x_logit = model.decode(z,x_class,args.apply_sigmoid)
+            else:
+                mean, logvar = model.encode(x)
+                z = model.reparameterize(mean, logvar)
+                x_logit = model.decode(z,args.apply_sigmoid)
+            cross_ent=(x-x_logit)**2
+            reconst = tf.reduce_sum(cross_ent, axis=[1, 2, 3])
+            kl= -0.5* args.kl_weight * tf.reduce_sum(1+logvar - mean**2 - tf.exp(logvar),axis=1)
+
+            per_example_loss= reconst+kl
+
+            return tf.nn.compute_average_loss(per_example_loss, global_batch_size=global_batch_size)
+
+        def compute_diversity_loss(samples,z):
+            '''It computes the average of the ratio of the L2 norm of the difference between the samples and the L2
+            norm of the difference between the latent vectors based off of https://arxiv.org/abs/1901.09024
+            
+            Parameters
+            ----------
+            samples
+                the generated samples
+            z
+                the latent space vector
+            
+            Returns
+            -------
+                The loss is being returned.
+            
+            '''
+            try:
+                batch_size=len(samples)
+            except TypeError:
+                try:
+                    batch_size=samples.shape[0]
+                except:
+                    batch_size=tf.shape(samples)[0]
+            _loss=tf.constant(0.0,dtype=tf.float32) #[-1.0* tf.reduce_mean(tf.square(tf.subtract(samples, samples)))]
+            for i in range(batch_size):
+                for j in range(i+1,batch_size):
+                    _loss+=tf.norm(samples[i]-samples[j])/tf.norm(z[i]-z[j])
+            loss=[-_loss*args.lambd]
+            return tf.nn.compute_average_loss(loss, global_batch_size=global_batch_size)
+
+        def compute_style_loss(x,extractor,extractor_lambda):
+            '''It takes an image, encodes it, decodes it, and then computes the style loss between the original
+            image and the decoded image
+            
+            Parameters
+            ----------
+            x
+                the input image
+            extractor
+                the style extractor network (vgg, resnet)
+            extractor_lambda
+                a list of weights for each layer of the style extractor.
+            
+            Returns
+            -------
+                The loss function for the style loss.
+            
+            '''
+            if args.c3vae:
+                [x,x_class]=x
+                mean, logvar = model.encode(x)
+                z = model.reparameterize(mean, logvar)
+                x_logit = model.decode(z,x_class,args.apply_sigmoid)
+            else:
+                mean, logvar = model.encode(x)
+                z = model.reparameterize(mean, logvar)
+                x_logit = model.decode(z,args.apply_sigmoid)
+            x_style=extractor(x)
+            x_logit_style=extractor(x_logit)
+            cross_ent=(x_style-x_logit_style)**2
+            reconst=tf.reduce_sum(extractor_lambda * cross_ent,axis=[1,2,3])
+            return tf.nn.compute_average_loss(reconst,global_batch_size=global_batch_size)
+
+        def compute_vgg_style_loss(x):
+            '''It takes a tensor and a style extractor, and returns a function that computes the vgg style loss for
+            that tensor
+            
+            Parameters
+            ----------
+            x
+                the input image
+            
+            Returns
+            -------
+                The loss function for the style loss.
+            
+            '''
+            return compute_style_loss(x,vgg_style_extractor,args.vgg_lambda)
+
+        def compute_resnet_style_loss(x):
+            '''It takes a tensor and returns a function that computes the resnet style loss of that tensor
+            
+            Parameters
+            ----------
+            x
+                the input image
+            
+            Returns
+            -------
+                The function compute_resnet_style_loss is being returned.
+            
+            '''
+            return compute_style_loss(x,resnet_style_extractor,args.resnet_lambda)
+
+        if args.gan:
+            disc=get_discriminator(args.level,(args.max_dim,args.max_dim,3),args.weights)
+            disc_optimizer=get_optimizer(
+            args.opt_name,
+            args.opt_type,
+            args.init_lr,
+            args.max_lr,
+            args.min_mom,
+            args.max_mom,
+            args.decay_rate,
+            args.cycle_steps,
+            args.phase_one_pct,
+            args.clipnorm)
 
         def compute_gradient_penalty(real_x,fake_x):
             '''It takes a batch of real images and a batch of fake images, and then it computes the gradient of the
@@ -405,9 +426,9 @@ with strategy.scope():
             loss=[tf.reduce_mean(labels)]
             return tf.nn.compute_average_loss(loss, global_batch_size=global_batch_size)
 
-    if args.creativity:
-        classifier=tf.keras.models.load_model(args.classifier_path)
-        print('loaded classifier from ',args.classifier_path)
+        if args.creativity:
+            classifier=tf.keras.models.load_model(args.classifier_path)
+            print('loaded classifier from ',args.classifier_path)
 
         def compute_creativity_loss(class_labels):
             '''It computes the cross-entropy loss between the predicted class labels and a uniform distribution
@@ -427,428 +448,192 @@ with strategy.scope():
             loss=cce(class_labels,uniform)
             return tf.nn.compute_average_loss(args.creativity_lambda * loss, global_batch_size=global_batch_size)
 
-    train_dataset,test_dataset,validate_dataset,test_sample,validate_sample=get_data_loaders(args,global_batch_size,print_debug,num_examples_to_generate,strategy)
-#end strategy scope
+        train_dataset,test_dataset,validate_dataset,test_sample,validate_sample,fid_test_sample, fid_validate_sample=get_data_loaders(args,global_batch_size,print_debug,num_examples_to_generate,strategy)
+    #end strategy scope
 
-def train_step(x):
-    with tf.GradientTape() as tape:
-        loss = compute_loss(x)
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    train_loss(loss)
-    return loss
-
-def test_step(x):
-    loss=compute_loss(x)
-    test_loss(loss)
-    return loss
-
-def validate_step(x):
-    loss=compute_loss(x)
-    validate_loss(loss)
-    return loss
-
-def diversity_step(z):
-    with tf.GradientTape() as tape:
-        samples=model.sample(z,args.apply_sigmoid)
-        loss=compute_diversity_loss(samples,z)
-    gradients = tape.gradient(loss, model.decoder.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.decoder.trainable_variables))
-    diversity_loss(loss)
-    return loss
-
-def vgg_style_step(x):
-    with tf.GradientTape() as tape:
-        loss=compute_vgg_style_loss(x)
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    vgg_loss(loss)
-    return loss
-
-def resnet_style_step(x):
-    with tf.GradientTape() as tape:
-        loss=compute_resnet_style_loss(x)
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    resnet_loss(loss)
-    return loss
-
-def fid_step(model,noise,loader):
-    '''It takes a model, a noise vector, and a dataset loader, and returns the FID loss between the model's
-    generated images and the dataset
-    
-    Parameters
-    ----------
-    model
-        the model to be trained
-    noise
-        a tensor of shape (batch_size,noise_dim)
-    loader
-        a tf.data.Dataset object that contains the images you want to compare your model's images to.
-    
-    Returns
-    -------
-        The loss is being returned.
-    
-    '''
-    images1=model.sample(noise,False)
-    for i in loader.shuffle(1000,reshuffle_each_iteration=True).batch(args.fid_sample_size):
-        images2=i
-        if args.c3vae:
-            [images2, _]= images2
-        break
-    loss=calculate_fid(images1,images2,(args.max_dim,args.max_dim,3))
-    return loss
-
-if args.gan:
-    def adversarial_step(x,gen_training=False):
-        '''> We sample a batch of random noise, pass it through the generator, and then pass the generated
-        images and real images through the discriminator. 
-        
-        Parameters
-        ----------
-        x
-            The real images input to discriminator
-        gen_training, optional
-            Whether to train the generator or not.
-        
-        Returns
-        -------
-            The generator and discriminator losses are being returned.
-        
-        '''
-        z=tf.random.truncated_normal((args.batch_size,args.latent_dim))
-        with tf.GradientTape(persistent=True) as gen_tape, tf.GradientTape(persistent=True) as disc_tape:
-            fake_x=model.decode(z,args.apply_sigmoid)
-
-            fake_labels=disc(fake_x)
-            real_labels=disc(x)
-
-            fake_d_loss=compute_gan_loss(fake_labels)
-            real_d_loss=compute_gan_loss(real_labels)
-            gp=compute_gradient_penalty(x,fake_x)
-            g_loss=-fake_d_loss
-            d_loss=fake_d_loss-real_d_loss + (args.lambda_gp*gp)
-        gen_loss(g_loss)
-        disc_loss(d_loss)
-        gp_loss(gp)
-        disc_gradients=disc_tape.gradient(d_loss,disc.trainable_variables)
-        disc_optimizer.apply_gradients(zip(disc_gradients,disc.trainable_variables))
-        if gen_training:
-            gen_gradients=gen_tape.gradient(g_loss,model.decoder.trainable_variables)
-            optimizer.apply_gradients(zip(gen_gradients, model.decoder.trainable_variables))
-        return g_loss,d_loss
-    
-    @tf.function
-    def distributed_adversarial_step(x,gen_training):
-        per_replica_losses = strategy.run(adversarial_step, args=(x,gen_training,))
-        return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
-                            axis=None)
-
-if args.creativity:
-    def creatvity_step(x):
-        with tf.GradientTape(persistent=True) as tape:
-            if args.c3vae:
-                [x,x_class]=x
-                mean, logvar = model.encode(x)
-                z = model.reparameterize(mean, logvar)
-                x_logit = model.decode(z,x_class,args.apply_sigmoid)
-            else:
-                mean, logvar = model.encode(x)
-                z = model.reparameterize(mean, logvar)
-                x_logit = model.decode(z,args.apply_sigmoid)
-            class_labels=classifier(x_logit)
-            loss=compute_creativity_loss(class_labels)
-        gradients = tape.gradient(loss, model.trainable_variables)
-        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-        creativity_loss(loss)
-        return loss
-
-    @tf.function
-    def distributed_creativity_step(x):
-        per_replica_losses = strategy.run(creatvity_step, args= (x,))
-        return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
-                         axis=None)
-        
+    distributed_adversarial_step, distributed_creativity_step, distributed_diversity_step,distributed_resnet_style_step,distributed_test_step,distributed_train_step,distributed_validate_step,distributed_vgg_style_step,fid_step = get_steps(
+        model, strategy, args, optimizer, train_loss, compute_loss, test_loss, validate_loss, compute_diversity_loss,
+        diversity_loss,compute_vgg_style_loss,vgg_loss,compute_resnet_style_loss,resnet_loss,disc,compute_gan_loss,
+        compute_gradient_penalty,gen_loss,disc_loss,gp_loss,disc_optimizer,classifier,compute_creativity_loss,creativity_loss)
 
 
-@tf.function
-def distributed_diversity_step(z):
-    per_replica_losses = strategy.run(diversity_step, args=(z,))
-    return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
-                         axis=None)
+    generate_and_save_images=get_generate_and_save_images(print_debug,args)
+    generate_from_noise=get_generate_from_noise(args,num_examples_to_generate)
 
-@tf.function
-def distributed_train_step(x):
-  per_replica_losses = strategy.run(train_step, args=(x,))
-  return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
-                         axis=None)
-
-@tf.function
-def distributed_test_step(x):
-    return strategy.run(test_step, args=(x,))
-
-@tf.function
-def distributed_validate_step(x):
-    return strategy.run(validate_step,args=(x,))
-
-@tf.function
-def distributed_vgg_style_step(x):
-    per_replica_losses = strategy.run(vgg_style_step, args=(x,))
-    return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
-                         axis=None)
-
-@tf.function
-def distributed_resnet_style_step(x):
-    per_replica_losses = strategy.run(resnet_style_step, args=(x,))
-    return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
-                         axis=None)
+    generate_and_save_images(model, args.begin_epoch, test_sample,False)
+    generate_from_noise(model,args.begin_epoch,random_vector_for_generation,False)
 
 
-def generate_and_save_images(model, epoch, test_sample,apply_sigmoid):
-    '''It takes a batch of images, encodes them, samples from the latent space, and then decodes them
-    
-    Parameters
-    ----------
-    model
-        The model that we are training.
-    epoch
-        The current epoch number.
-    test_sample
-        a batch of test images
-    apply_sigmoid
-        If True, the output of the generator will go through a sigmoid function. 
-    
-    '''
-    predictions = model(test_sample)
-    print_debug("real prediction shape",predictions.shape)
-    fig = plt.figure(figsize=(4, 4))
+    def fid_eval_and_store(step,model):
+        if args.test:
+            fid_score=fid_step(model,random_vector_fid,fid_test_sample)
+            print("FID score test {}".format(fid_score))
+            with fid_test_summary_writer.as_default():
+                tf.summary.scalar("fid_test_score",fid_score,step=step)
+        if args.validate:
+            fid_score=fid_step(model,random_vector_fid,fid_validate_sample)
+            print("FID score validate {}".format(fid_score))
+            with fid_validate_summary_writer.as_default():
+                tf.summary.scalar("fid_validate_score",fid_score,step=step)
 
-    for i in range(predictions.shape[0]):
-        plt.subplot(4, 4, i + 1)
-        plt.imshow(predictions[i])
-        plt.axis('off')
-
-    plt.savefig('{}/{}/image_at_epoch_{:04d}.png'.format(gen_img_dir,args.name,epoch))
-    plt.show()
-
-def generate_from_noise(model,epoch,random_vector,apply_sigmoid):
-    '''It takes a model, an epoch number, a random vector, and a boolean flag, and then generates a grid of
-    images from the random vector, and saves the grid to a file.
-    
-    Parameters
-    ----------
-    model
-        the model we're using to generate images
-    epoch
-        the current epoch number
-    random_vector
-        A vector of shape (1,latent_dim) that will be used to generate an image.
-    apply_sigmoid
-        If True, the output of the generator will be passed through a sigmoid function. This is useful if
-    the output of the generator is a probability.
-    
-    '''
-    if args.c3vae:
-        indices=[randrange(len(args.genres)) for _ in range(num_examples_to_generate)]
-        random_classes=tf.one_hot(indices,len(args.genres))
-        predictions=model.sample(random_vector,apply_sigmoid, random_classes)
-    else:
-        predictions = model.sample(random_vector,apply_sigmoid)
-    fig = plt.figure(figsize=(4, 4))
-
-    for i in range(predictions.shape[0]):
-        plt.subplot(4, 4, i + 1)
-        plt.imshow(predictions[i])
-        plt.axis('off')
-
-    plt.savefig('{}/{}/gen_image_at_epoch_{:04d}.png'.format(gen_img_dir,args.name,epoch))
-    plt.show()
-
-
-
-generate_and_save_images(model, args.begin_epoch, test_sample,False)
-generate_from_noise(model,args.begin_epoch,random_vector_for_generation,False)
-
-if args.fid:
-    fid_score=fid_step(model,random_vector_fid,loader)
-    print("FID score {}".format(fid_score))
-    with fid_summary_writer.as_default():
-        tf.summary.scalar("fid_score",fid_score,step=args.begin_epoch)
-
-for epoch in range(args.begin_epoch+1, args.epochs + 1):
-    start_time = time.time()
-    for train_x in train_dataset:
-        distributed_train_step(train_x)
-        if args.vgg_style:
-            distributed_vgg_style_step(train_x)
-        if args.resnet:
-            distributed_resnet_style_step(train_x)
-        if args.gan and args.gan_start<=epoch:
-            gen_training = (epoch % args.n_critic== True)
-            distributed_adversarial_step(train_x,gen_training)
-        if args.creativity and epoch >=args.creativity_start:
-            distributed_creativity_step(train_x)
-    end_time = time.time()
-    with train_summary_writer.as_default():
-        tf.summary.scalar('training_loss', train_loss.result(), step=epoch)
-    if args.vgg_style:
-        with vgg_summary_writer.as_default():
-            tf.summary.scalar('vgg_loss',vgg_loss.result(),step=epoch)
-    
-    if args.resnet:
-        with resnet_summary_writer.as_default():
-            tf.summary.scalar('resnet_loss',resnet_loss.result(),step=epoch)
-
-    if args.creativity and epoch >=args.creativity_start:
-        with creativity_summary_writer.as_default():
-            tf.summary.scalar("creativity_loss",creativity_loss.result(),step=epoch)
-
-
-    if args.diversity:
-        for _ in range(args.diversity_batches):
-            z=tf.random.normal(shape=[8, args.latent_dim])
-            distributed_diversity_step(z)
-
-        with diversity_summary_writer.as_default():
-            tf.summary.scalar('diversity_loss',diversity_loss.result(),step=epoch)
-
-    if args.gan:
-        with disc_summary_writer.as_default():
-            tf.summary.scalar("disc_loss",disc_loss.result(),step=epoch)
-        with gen_summary_writer.as_default():
-            tf.summary.scalar("gen_loss",gen_loss.result(),step=epoch)
-        with gp_summary_writer.as_default():
-            tf.summary.scalar("gradient_penalty",gp_loss.result(),step=epoch)
-
-        gp_loss.reset_states()
-        disc_loss.reset_states()
-        gen_loss.reset_states()
-
-    if args.validate:
-        for validate_x in validate_dataset:
-            distributed_validate_step(validate_x)
-        elbo = -validate_loss.result()
-        with test_summary_writer.as_default():
-            tf.summary.scalar('loss', validate_loss.result(),step=epoch)
-    if args.test:
-        for test_x in test_dataset:
-            distributed_test_step(test_x)
-        elbo = -test_loss.result()
-        with test_summary_writer.as_default():
-            tf.summary.scalar('loss', test_loss.result(), step=epoch)
-
-    display.clear_output(wait=False)
-    print('Epoch: {}, time elapse for current epoch: {}'
-                .format(epoch,  end_time - start_time))
-    if epoch %5==0:
-        generate_and_save_images(model, epoch, test_sample,args.apply_sigmoid)
-        generate_from_noise(model,epoch,random_vector_for_generation,args.apply_sigmoid)
-
-    if epoch %args.fid_interval==0 and args.fid:
-        fid_score=fid_step(model,random_vector_fid,loader)
-        print("FID score {}".format(fid_score))
-        with fid_summary_writer.as_default():
-            tf.summary.scalar("fid_score",fid_score,step=epoch)
-
-
-    train_loss.reset_states()
-    test_loss.reset_states()
-    validate_loss.reset_states()
-    diversity_loss.reset_states()
-    vgg_loss.reset_states()
-    fid_loss.reset_states()
-    resnet_loss.reset_states()
-
-if args.fid:
-    fid_score=fid_step(model,random_vector_fid,loader)
-    print("FID score {}".format(fid_score))
-    with fid_summary_writer.as_default():
-        tf.summary.scalar("fid_score",fid_score,step=args.epochs + 1)
-    fid_loss.reset_states()
-
-if args.gan and args.extra_epochs>0:
-    for epoch in range(args.epochs+1,1+args.epochs+args.extra_epochs):
+    for epoch in range(args.begin_epoch+1, args.epochs + 1):
         start_time = time.time()
         for train_x in train_dataset:
-            gen_training = (epoch % args.n_critic== True)
-            distributed_adversarial_step(train_x,gen_training)
+            distributed_train_step(train_x)
+            if args.vgg_style:
+                distributed_vgg_style_step(train_x)
+            if args.resnet:
+                distributed_resnet_style_step(train_x)
+            if args.gan and args.gan_start<=epoch:
+                gen_training = (epoch % args.n_critic== True)
+                distributed_adversarial_step(train_x,gen_training)
+            if args.creativity and epoch >=args.creativity_start:
+                distributed_creativity_step(train_x)
         end_time = time.time()
-        print('Epoch: {}, disc loss: {}, time elapse for current epoch: {}'
-                .format(epoch, disc_loss.result(), end_time - start_time))
-        with disc_summary_writer.as_default():
-            tf.summary.scalar("disc_loss",disc_loss.result(),step=epoch)
-        with gen_summary_writer.as_default():
-            tf.summary.scalar("gen_loss",gen_loss.result(),step=epoch)
-        with gp_summary_writer.as_default():
-            tf.summary.scalar("gradient_penalty",gp_loss.result(),step=epoch)
+        with train_summary_writer.as_default():
+            tf.summary.scalar('training_loss', train_loss.result(), step=epoch)
+        if args.vgg_style:
+            with vgg_summary_writer.as_default():
+                tf.summary.scalar('vgg_loss',vgg_loss.result(),step=epoch)
+        
+        if args.resnet:
+            with resnet_summary_writer.as_default():
+                tf.summary.scalar('resnet_loss',resnet_loss.result(),step=epoch)
 
-        gp_loss.reset_states()
-        disc_loss.reset_states()
-        gen_loss.reset_states()
+        if args.creativity and epoch >=args.creativity_start:
+            with creativity_summary_writer.as_default():
+                tf.summary.scalar("creativity_loss",creativity_loss.result(),step=epoch)
 
+
+        if args.diversity:
+            for _ in range(args.diversity_batches):
+                z=tf.random.normal(shape=[8, args.latent_dim])
+                distributed_diversity_step(z)
+
+            with diversity_summary_writer.as_default():
+                tf.summary.scalar('diversity_loss',diversity_loss.result(),step=epoch)
+
+        if args.gan:
+            with disc_summary_writer.as_default():
+                tf.summary.scalar("disc_loss",disc_loss.result(),step=epoch)
+            with gen_summary_writer.as_default():
+                tf.summary.scalar("gen_loss",gen_loss.result(),step=epoch)
+            with gp_summary_writer.as_default():
+                tf.summary.scalar("gradient_penalty",gp_loss.result(),step=epoch)
+
+            gp_loss.reset_states()
+            disc_loss.reset_states()
+            gen_loss.reset_states()
+
+        if args.validate:
+            for validate_x in validate_dataset:
+                distributed_validate_step(validate_x)
+            elbo = -validate_loss.result()
+            with test_summary_writer.as_default():
+                tf.summary.scalar('loss', validate_loss.result(),step=epoch)
+        if args.test:
+            for test_x in test_dataset:
+                distributed_test_step(test_x)
+            elbo = -test_loss.result()
+            with test_summary_writer.as_default():
+                tf.summary.scalar('loss', test_loss.result(), step=epoch)
+
+        display.clear_output(wait=False)
+        print('Epoch: {}, time elapse for current epoch: {}'
+                    .format(epoch,  end_time - start_time))
         if epoch %5==0:
             generate_and_save_images(model, epoch, test_sample,args.apply_sigmoid)
             generate_from_noise(model,epoch,random_vector_for_generation,args.apply_sigmoid)
 
         if epoch %args.fid_interval==0 and args.fid:
-            fid_score=fid_step(model,random_vector_fid,loader)
-            print("FID score {}".format(fid_score))
-            with fid_summary_writer.as_default():
-                tf.summary.scalar("fid_score",fid_score,step=epoch)
-            fid_loss.reset_states()
-
-if args.fid:
-    fid_score=fid_step(model,random_vector_fid,loader)
-    print("FID score {}".format(fid_score))
-    with fid_summary_writer.as_default():
-        tf.summary.scalar("fid_score",fid_score,step=epoch+1)
-    fid_loss.reset_states()
-
-if args.generate_smote:
-    target_root=root_dict[args.dataset]
-    target_styles=[]
-    for s in os.listdir(target_root):
-        path=os.path.join(target_root,s)
-        if os.path.isdir(path):
-            length=len(get_npz_paths(args.max_dim,[s],target_root,True))
-            if length>args.smote_minimum and length < args.smote_maximum:
-                target_styles.append(s)
-    #target_styles=[s for s in os.listdir(target_root) if s[0]!='.' and len(os.listdir(os.path.join(target_root,s))) >args.smote_minimum and len(os.listdir(os.path.join(target_root,s))) <args.smote_maximum]
-    print(target_styles)
-    for style in target_styles:
-        synthetic=make_smote(model,args.max_dim,style,args.smote_maximum)
-        print("style {} with {} SMOTE things".format(s,len(synthetic)))
-        for s,img in enumerate(synthetic):
-            new_file='{}.{}.{}.npy'.format(smote_sample,s,args.max_dim)
-            new_path=os.path.join(target_root,style,new_file)
-            np.save(new_path,255*img)
-            print("\tsaved at ",new_path)
+            fid_eval_and_store(epoch,model)
 
 
-if args.evaluation_imgs >0:
-    eval_dir=args.evaluation_path+args.name
-    os.makedirs(eval_dir,exist_ok=True)
-    evaluation_latent_vector = tf.random.normal(
-        shape=[args.evaluation_imgs, args.latent_dim])
-    predictions = model.sample(evaluation_latent_vector,args.apply_sigmoid)
+        train_loss.reset_states()
+        test_loss.reset_states()
+        validate_loss.reset_states()
+        diversity_loss.reset_states()
+        vgg_loss.reset_states()
+        fid_test_loss.reset_states()
+        resnet_loss.reset_states()
 
-    predictions=tf.image.resize(predictions, [256,256])
-    
-    plt.figure()
+    if args.fid:
+        fid_eval_and_store(args.epochs+1,model)
 
-    for i in range(predictions.shape[0]):
-        plt.imshow(predictions[i])
-        plt.savefig('{}/{}.png'.format(eval_dir,i))
-        plt.show()
-    
+    if args.gan and args.extra_epochs>0:
+        for epoch in range(args.epochs+1,1+args.epochs+args.extra_epochs):
+            start_time = time.time()
+            for train_x in train_dataset:
+                gen_training = (epoch % args.n_critic== True)
+                distributed_adversarial_step(train_x,gen_training)
+            end_time = time.time()
+            print('Epoch: {}, disc loss: {}, time elapse for current epoch: {}'
+                    .format(epoch, disc_loss.result(), end_time - start_time))
+            with disc_summary_writer.as_default():
+                tf.summary.scalar("disc_loss",disc_loss.result(),step=epoch)
+            with gen_summary_writer.as_default():
+                tf.summary.scalar("gen_loss",gen_loss.result(),step=epoch)
+            with gp_summary_writer.as_default():
+                tf.summary.scalar("gradient_penalty",gp_loss.result(),step=epoch)
 
-if args.save:
-    save_path=checkpoint_dir+"/"+args.name
-    os.makedirs(save_path,exist_ok=True)
-    model.encoder.save(save_path+"/encoder")
-    print("saved at ",save_path+"/encoder")
-    model.decoder.save(save_path+"/decoder")
-    print("saved at ",save_path+"/decoder")
+            gp_loss.reset_states()
+            disc_loss.reset_states()
+            gen_loss.reset_states()
 
-print("all done!")
+            if epoch %5==0:
+                generate_and_save_images(model, epoch, test_sample,args.apply_sigmoid)
+                generate_from_noise(model,epoch,random_vector_for_generation,args.apply_sigmoid)
+
+            if epoch %args.fid_interval==0 and args.fid:
+                fid_eval_and_store(epoch,model)
+
+    if args.fid:
+        fid_eval_and_store(epoch+1,model)
+
+    if args.generate_smote:
+        target_root=root_dict[args.dataset]
+        target_styles=[]
+        for s in os.listdir(target_root):
+            path=os.path.join(target_root,s)
+            if os.path.isdir(path):
+                length=len(get_npz_paths(args.max_dim,[s],target_root,True))
+                if length>args.smote_minimum and length < args.smote_maximum:
+                    target_styles.append(s)
+        #target_styles=[s for s in os.listdir(target_root) if s[0]!='.' and len(os.listdir(os.path.join(target_root,s))) >args.smote_minimum and len(os.listdir(os.path.join(target_root,s))) <args.smote_maximum]
+        print(target_styles)
+        for style in target_styles:
+            synthetic=make_smote(model,args.max_dim,style,args.smote_maximum)
+            print("style {} with {} SMOTE things".format(s,len(synthetic)))
+            for s,img in enumerate(synthetic):
+                new_file='{}.{}.{}.npy'.format(smote_sample,s,args.max_dim)
+                new_path=os.path.join(target_root,style,new_file)
+                np.save(new_path,255*img)
+                print("\tsaved at ",new_path)
+
+
+    if args.evaluation_imgs >0:
+        eval_dir=args.evaluation_path+args.name
+        os.makedirs(eval_dir,exist_ok=True)
+        evaluation_latent_vector = tf.random.normal(
+            shape=[args.evaluation_imgs, args.latent_dim])
+        predictions = model.sample(evaluation_latent_vector,args.apply_sigmoid)
+
+        predictions=tf.image.resize(predictions, [256,256])
+        
+        plt.figure()
+
+        for i in range(predictions.shape[0]):
+            plt.imshow(predictions[i])
+            plt.savefig('{}/{}.png'.format(eval_dir,i))
+            plt.show()
+        
+
+    if args.save:
+        save_path=checkpoint_dir+"/"+args.name
+        os.makedirs(save_path,exist_ok=True)
+        model.encoder.save(save_path+"/encoder")
+        print("saved at ",save_path+"/encoder")
+        model.decoder.save(save_path+"/decoder")
+        print("saved at ",save_path+"/decoder")
+
+    print("all done!")

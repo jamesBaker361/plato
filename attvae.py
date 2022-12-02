@@ -11,12 +11,14 @@ from tensorflow.keras.layers import (
     Add,
     Flatten
 )
-from tensorflow.keras.layers.experimental.preprocessing import Rescaling
+from optimizer_config import *
+from data_helper import *
+from generate_img_helpers import *
 from cvae import *
 
 
 class MultiHeadSelfAttention(tf.keras.layers.Layer):
-    def __init__(self, embed_dim, num_heads=8):
+    def __init__(self, embed_dim, num_heads):
         super(MultiHeadSelfAttention, self).__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -25,10 +27,10 @@ class MultiHeadSelfAttention(tf.keras.layers.Layer):
                 f"embedding dimension = {embed_dim} should be divisible by number of heads = {num_heads}"
             )
         self.projection_dim = embed_dim // num_heads
-        self.query_dense = Dense(embed_dim)
-        self.key_dense = Dense(embed_dim)
-        self.value_dense = Dense(embed_dim)
-        self.combine_heads = Dense(embed_dim)
+        self.query_dense = Dense(embed_dim,name='query')
+        self.key_dense = Dense(embed_dim,name='key')
+        self.value_dense = Dense(embed_dim,name='value')
+        self.combine_heads = Dense(embed_dim,name='combine')
 
     def attention(self, query, key, value):
         score = tf.matmul(query, key, transpose_b=True)
@@ -64,7 +66,8 @@ class MultiHeadSelfAttention(tf.keras.layers.Layer):
 
 
 class TransformerBlock(tf.keras.layers.Layer):
-    def __init__(self, embed_dim, num_heads, mlp_dim, dropout=0.1):
+    def __init__(self, embed_dim, num_heads, mlp_dim):
+        dropout=0.1
         super(TransformerBlock, self).__init__()
         self.att = MultiHeadSelfAttention(embed_dim, num_heads)
         self.mlp = tf.keras.Sequential(
@@ -97,7 +100,6 @@ class AttentionVAE(CVAE):
         channels=3
         num_heads=4
         mlp_dim=8
-        super().__init__(latent_dim, max_dim, *args, **kwargs)
         self.patch_size = patch_size
         num_patches_sqrt=max_dim // patch_size
         num_patches = num_patches_sqrt ** 2
@@ -105,6 +107,7 @@ class AttentionVAE(CVAE):
 
         self.num_layers = num_layers
 
+        super(AttentionVAE,self).__init__(latent_dim, max_dim, *args, **kwargs)
         self.pos_emb = self.add_weight(
             "pos_emb", shape=(1, num_patches, d_encoder)
         )
@@ -191,9 +194,276 @@ class AttentionVAE(CVAE):
 
 
 if __name__ == '__main__':
-    models=[AttentionVAE(16,4,8,8,32,64),AttentionVAE(8,4,8,8,32,64)]
-    v=tf.random.uniform((10,64,64,3))
-    for m in models:
-        print(v.shape)
-        print(m(v).shape)
-        print(m.patch_size)
+    strategy = tf.distribute.MirroredStrategy()
+
+    class Args(object):
+        def __init__(self, _dict):
+            self.__dict__.update(_dict)
+
+    def test1():
+        models=[AttentionVAE(16,4,8,8,32,64,strategy),AttentionVAE(8,4,8,8,32,64)]
+
+        v=tf.random.uniform((10,64,64,3))
+
+        models[0](v)
+        for var in models[0].trainable_variables:
+            print(var.name)
+
+        for m in models:
+            print(v.shape)
+            print(m(v).shape)
+            print(m.patch_size)
+
+    
+    def test2():
+        with strategy.scope():
+            model=AttentionVAE(16,4,8,8,32,64)
+            optimizer=tf.keras.optimizers.Adam()
+            dataset=tf.data.Dataset.from_tensor_slices([tf.random.uniform((64,64,3)) for _ in range(4)]).batch(1)
+            dataset=strategy.experimental_distribute_dataset(dataset)
+
+            def compute_loss(x):
+                mean, logvar = model.encode(x)
+                z = model.reparameterize(mean, logvar)
+                x_logit = model.decode(z,False)
+                cross_ent=(x-x_logit)**2
+
+                return tf.nn.compute_average_loss(cross_ent, global_batch_size=1)
+
+        def train_step(x):
+            with tf.GradientTape() as tape:
+                loss = compute_loss(x)
+            gradients = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            return loss
+
+        @tf.function
+        def distributed_train_step(x):
+            per_replica_losses = strategy.run(train_step, args=(x,))
+            return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
+                         axis=None)
+
+        for x in dataset:
+            distributed_train_step(x)
+
+    def test3():
+        global_batch_size=1
+        num_examples_to_generate=1
+        args=Args({
+            'c3vae':False,
+            "oversample":False,
+            "dataset":"faces2",
+            "batch_size":1,
+            "genres":["ukiyo-e"],"max_dim":64,"use_smote":False,
+            "quantity":10
+        })
+        def print_debug(*a):
+            print(*a)
+        with strategy.scope():
+            model=AttentionVAE(16,4,8,8,32,64)
+            optimizer=tf.keras.optimizers.Adam()
+            #dataset=tf.data.Dataset.from_tensor_slices([tf.random.uniform((64,64,3)) for _ in range(4)]).batch(global_batch_size)
+            #dataset=strategy.experimental_distribute_dataset(dataset)
+            train_dataset,test_dataset,validate_dataset,test_sample,validate_sample=get_data_loaders(args,global_batch_size,print_debug,num_examples_to_generate,strategy)
+            def compute_loss(x):
+                mean, logvar = model.encode(x)
+                z = model.reparameterize(mean, logvar)
+                x_logit = model.decode(z,False)
+                cross_ent=(x-x_logit)**2
+
+                return tf.nn.compute_average_loss(cross_ent, global_batch_size=global_batch_size)
+
+        def train_step(x):
+            with tf.GradientTape() as tape:
+                loss = compute_loss(x)
+            gradients = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            return loss
+
+        @tf.function
+        def distributed_train_step(x):
+            per_replica_losses = strategy.run(train_step, args=(x,))
+            return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
+                         axis=None)
+
+        for x in train_dataset:
+            distributed_train_step(x)
+
+
+    def test5():
+        global_batch_size=1
+        num_examples_to_generate=1
+        args=Args({
+            'c3vae':False,
+            "oversample":False,
+            "dataset":"faces2",
+            "batch_size":1,
+            "genres":["ukiyo-e"],"max_dim":64,"use_smote":False,
+            "quantity":10,
+            "kl_weight":1.0
+        })
+        def print_debug(*a):
+            print(*a)
+        with strategy.scope():
+            model=AttentionVAE(16,4,8,8,32,64)
+            #optimizer=tf.keras.optimizers.Adam()
+            optimizer=get_optimizer('adam','vanilla',0.01,0.01,0.85,0.95,0.4,1000,0.9,1.0)
+            #dataset=tf.data.Dataset.from_tensor_slices([tf.random.uniform((64,64,3)) for _ in range(4)]).batch(global_batch_size)
+            #dataset=strategy.experimental_distribute_dataset(dataset)
+            train_dataset,test_dataset,validate_dataset,test_sample,validate_sample=get_data_loaders(args,global_batch_size,print_debug,num_examples_to_generate,strategy)
+            def compute_loss(x):
+                mean, logvar = model.encode(x)
+                z = model.reparameterize(mean, logvar)
+                x_logit = model.decode(z,False)
+                cross_ent=(x-x_logit)**2
+                reconst = tf.reduce_sum(cross_ent, axis=[1, 2, 3])
+                kl= -0.5* args.kl_weight * tf.reduce_sum(1+logvar - mean**2 - tf.exp(logvar),axis=1)
+
+                per_example_loss= reconst+kl
+
+                return tf.nn.compute_average_loss(per_example_loss, global_batch_size=global_batch_size)
+
+        def train_step(x):
+            with tf.GradientTape() as tape:
+                loss = compute_loss(x)
+            gradients = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            return loss
+
+        @tf.function
+        def distributed_train_step(x):
+            per_replica_losses = strategy.run(train_step, args=(x,))
+            return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
+                         axis=None)
+
+        for x in train_dataset:
+            distributed_train_step(x)
+
+
+    def test5():
+        global_batch_size=2
+        num_examples_to_generate=2
+        args=Args({
+            'c3vae':False,
+            "oversample":False,
+            "dataset":"faces2",
+            "batch_size":2,
+            "genres":["ukiyo-e"],
+            "max_dim":64,
+            "use_smote":False,
+            "quantity":20,
+            "kl_weight":1.0
+        })
+        def print_debug(*a):
+            print(*a)
+        with strategy.scope():
+            model=AttentionVAE(16,4,8,8,32,64)
+            #optimizer=tf.keras.optimizers.Adam()
+            optimizer=get_optimizer('adam','vanilla',0.01,0.01,0.85,0.95,0.4,1000,0.9,1.0)
+            #dataset=tf.data.Dataset.from_tensor_slices([tf.random.uniform((64,64,3)) for _ in range(4)]).batch(global_batch_size)
+            #dataset=strategy.experimental_distribute_dataset(dataset)
+            train_dataset,test_dataset,validate_dataset,test_sample,validate_sample=get_data_loaders(args,global_batch_size,print_debug,num_examples_to_generate,strategy)
+            def compute_loss(x):
+                mean, logvar = model.encode(x)
+                z = model.reparameterize(mean, logvar)
+                x_logit = model.decode(z,False)
+                cross_ent=(x-x_logit)**2
+                reconst = tf.reduce_sum(cross_ent, axis=[1, 2, 3])
+                kl= -0.5* args.kl_weight * tf.reduce_sum(1+logvar - mean**2 - tf.exp(logvar),axis=1)
+
+                per_example_loss= reconst+kl
+
+                return tf.nn.compute_average_loss(per_example_loss, global_batch_size=global_batch_size)
+
+        
+        def train_step(x):
+            with tf.GradientTape() as tape:
+                loss = compute_loss(x)
+            gradients = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            return loss
+
+        @tf.function
+        def distributed_train_step(x):
+            per_replica_losses = strategy.run(train_step, args=(x,))
+            return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
+                         axis=None)
+
+        for epoch in range(2):
+            for x in train_dataset:
+                distributed_train_step(x)
+
+    def test6():
+        num_examples_to_generate=1
+        args=Args({
+            'c3vae':False,
+            "oversample":False,
+            "dataset":"faces2",
+            "batch_size":2,
+            "genres":["ukiyo-e"],
+            "max_dim":64,
+            "use_smote":False,
+            "quantity":20,
+            "kl_weight":1.0,
+            "begin_epoch":0,
+            "latent_dim":32
+        })
+        logical_gpus = tf.config.list_logical_devices('GPU')
+        strategy = tf.distribute.MirroredStrategy()
+
+        if len(logical_gpus)>0:
+            global_batch_size=len(logical_gpus)*args.batch_size
+        else:
+            global_batch_size=args.batch_size
+        def print_debug(*a):
+            print(*a)
+
+        random_vector_for_generation = tf.random.normal(
+        shape=[num_examples_to_generate, args.latent_dim])
+        with strategy.scope():
+            model=AttentionVAE(16,4,8,8,32,64)
+            #optimizer=tf.keras.optimizers.Adam()
+            optimizer=get_optimizer('adam','vanilla',0.01,0.01,0.85,0.95,0.4,1000,0.9,1.0)
+            #dataset=tf.data.Dataset.from_tensor_slices([tf.random.uniform((64,64,3)) for _ in range(4)]).batch(global_batch_size)
+            #dataset=strategy.experimental_distribute_dataset(dataset)
+            train_dataset,test_dataset,validate_dataset,test_sample,validate_sample=get_data_loaders(args,global_batch_size,print_debug,num_examples_to_generate,strategy)
+            def compute_loss(x):
+                mean, logvar = model.encode(x)
+                z = model.reparameterize(mean, logvar)
+                x_logit = model.decode(z,False)
+                cross_ent=(x-x_logit)**2
+                reconst = tf.reduce_sum(cross_ent, axis=[1, 2, 3])
+                kl= -0.5* args.kl_weight * tf.reduce_sum(1+logvar - mean**2 - tf.exp(logvar),axis=1)
+
+                per_example_loss= reconst+kl
+
+                return tf.nn.compute_average_loss(per_example_loss, global_batch_size=global_batch_size)
+
+
+        def train_step(x):
+            with tf.GradientTape() as tape:
+                loss = compute_loss(x)
+            gradients = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            return loss
+
+        @tf.function
+        def distributed_train_step(x):
+            per_replica_losses = strategy.run(train_step, args=(x,))
+            return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
+                         axis=None)
+
+        generate_and_save_images=get_generate_and_save_images(print_debug,args)
+        generate_from_noise=get_generate_from_noise(args,num_examples_to_generate)
+
+        generate_and_save_images(model, args.begin_epoch, test_sample,False)
+        generate_from_noise(model,args.begin_epoch,random_vector_for_generation,False)
+
+        for epoch in range(2):
+            for x in train_dataset:
+                distributed_train_step(x)
+
+
+    test5()
+    print("done :)")
+

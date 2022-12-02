@@ -1,12 +1,5 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
-
-import tensorflow as tf
-import numpy as np
-import matplotlib.pyplot as plt
-from IPython import display
-from classifier import get_discriminator
-from cvae import CVAE
 from data_loader import *
 import time
 from random import randrange
@@ -35,9 +28,13 @@ def get_data_loaders(args,global_batch_size,print_debug,num_examples_to_generate
     else:
         loader=get_loader(args.max_dim,args.genres,args.quantity,root_dict[args.dataset],not args.use_smote)
 
-    test_dataset = loader.enumerate().filter(lambda x,y: x % 10== 0).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
+    _test=loader.enumerate().filter(lambda x,y: x % 10== 0).map(lambda x,y: y)
 
-    validate_dataset = loader.enumerate().filter(lambda x,y: x % 10 == 1).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
+    test_dataset = _test.shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
+
+    _validate = loader.enumerate().filter(lambda x,y: x % 10 == 1).map(lambda x,y: y)
+
+    validate_dataset = _validate.shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
 
     print_debug("test cardinality ",len([_ for _ in test_dataset]))
 
@@ -46,6 +43,18 @@ def get_data_loaders(args,global_batch_size,print_debug,num_examples_to_generate
     print_debug("train cardinality ",len([_ for _ in train_dataset]))
 
     print_debug("dataset element_spec", train_dataset.element_spec)
+
+    for i in _test.shuffle(10000,seed=123).batch(args.fid_sample_size):
+        fid_test_sample=i
+        if args.c3vae:
+            [fid_test_sample, _]= i
+        break
+
+    for i in _validate.shuffle(10000, seed=123).batch(args.fid_sample_size):
+        fid_validate_sample = i
+        if args.c3vae:
+            [fid_validate_sample, _] = i
+        break
 
     # Pick a sample of the test set for generating output images
     assert args.batch_size >= num_examples_to_generate
@@ -67,4 +76,4 @@ def get_data_loaders(args,global_batch_size,print_debug,num_examples_to_generate
     test_dataset=strategy.experimental_distribute_dataset(test_dataset)
     validate_dataset=strategy.experimental_distribute_dataset(validate_dataset)
 
-    return train_dataset,test_dataset,validate_dataset,test_sample,validate_sample
+    return train_dataset,test_dataset,validate_dataset,test_sample,validate_sample,fid_test_sample, fid_validate_sample
