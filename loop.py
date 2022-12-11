@@ -2,7 +2,9 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 
 import tensorflow as tf
-import numpy as np
+import optuna
+import atexit
+import json
 import matplotlib.pyplot as plt
 from IPython import display
 from classifier import get_discriminator
@@ -107,7 +109,8 @@ parser.add_argument("--validate",type=bool, default=False, help="whether to use 
 parser.add_argument("--test", type=bool,default=False,help="whether to use test set for evaluation")
 
 parser.add_argument("--optuna", type=bool, default=False, help='whether to use optuna for hyperparameter search')
-parser.add_argument("--optuna_metric", type=str, default="mse",help="metric to optimize optuna for (mse, fid or elbo)")
+parser.add_argument("--optuna_metric", type=str, default="mse",help="metric to optimize optuna for (mse, fid)")
+parser.add_argument("--n_trials",type=int,default=100,help="how many trials to run for optuna")
 
 for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,250,4,10]):
     parser.add_argument("--{}".format(names),type=int,default=default)
@@ -116,6 +119,7 @@ args = parser.parse_args()
 
 def objective(trial):
     if args.optuna:
+        args.test=True
         if args.attvae:
             args.class_latent_dim=trial.suggest_categorical('class_latent_dim',[16,32,64])
             args.patch_size=trial.suggest_categorical('patch_size', [4,8,16,32])
@@ -123,16 +127,23 @@ def objective(trial):
             args.d_encoder=trial.suggest_categorical("d_encoder",[16,32,64,128])
             args.d_decoder=trial.suggest_categorical("d_decoder",[16,32,64,128])
 
+        if args.gan:
+            args.n_critic=trial.suggest_int("n_critic",3,10)
+
+        args.init_lr=trial.suggest_categorical("init_lr",[0.00001,0.00005,0.0001])
+        args.batch_size=trial.suggest_categorical("batch_size",[8,16,32,64])
+        args.latent_dim=trial.suggest_categorical("latent_dim",[8,16,32,64])
+
     if len(args.genres)==0:
         args.genres=dataset_default_all_styles[args.dataset]
 
-    num_examples_to_generate = 16
+    num_examples_to_generate = 8
 
     image_size=(args.max_dim,args.max_dim,3)
 
     current_time = datetime.datetime.now().strftime("%H%M%S")
     if len(args.name)==0:
-        args.name=current_time
+        args.name=current_time+"_"+str(randrange(0,20))
 
     os.makedirs(gen_img_dir+"/"+args.name,exist_ok=True)
 
@@ -145,6 +156,8 @@ def objective(trial):
 
     logical_gpus = tf.config.list_logical_devices('GPU')
     strategy = tf.distribute.MirroredStrategy()
+
+    atexit.register(strategy._extended._collective_ops._pool.close) # type: ignore
 
     if len(logical_gpus)>0:
         global_batch_size=len(logical_gpus)*args.batch_size
@@ -468,18 +481,24 @@ def objective(trial):
     generate_and_save_images(model, args.begin_epoch, test_sample,False)
     generate_from_noise(model,args.begin_epoch,random_vector_for_generation,False)
 
+    mse=0
+    test_fid_score=0
+    validate_fid_score=0
 
     def fid_eval_and_store(step,model):
+        test_fid_score=0
+        validate_fid_score=0
         if args.test:
-            fid_score=fid_step(model,random_vector_fid,fid_test_sample)
-            print("FID score test {}".format(fid_score))
+            test_fid_score=fid_step(model,random_vector_fid,fid_test_sample)
+            print("FID score test {}".format(test_fid_score))
             with fid_test_summary_writer.as_default():
-                tf.summary.scalar("fid_test_score",fid_score,step=step)
+                tf.summary.scalar("fid_test_score",test_fid_score,step=step)
         if args.validate:
-            fid_score=fid_step(model,random_vector_fid,fid_validate_sample)
-            print("FID score validate {}".format(fid_score))
+            validate_fid_score=fid_step(model,random_vector_fid,fid_validate_sample)
+            print("FID score validate {}".format(validate_fid_score))
             with fid_validate_summary_writer.as_default():
-                tf.summary.scalar("fid_validate_score",fid_score,step=step)
+                tf.summary.scalar("fid_validate_score",validate_fid_score,step=step)
+        return test_fid_score,validate_fid_score
 
     for epoch in range(args.begin_epoch+1, args.epochs + 1):
         start_time = time.time()
@@ -534,14 +553,14 @@ def objective(trial):
             for validate_x in validate_dataset:
                 distributed_validate_step(validate_x)
             elbo = -validate_loss.result()
-            with test_summary_writer.as_default():
-                tf.summary.scalar('loss', validate_loss.result(),step=epoch)
+            with validate_summary_writer.as_default():
+                tf.summary.scalar('loss', elbo,step=epoch)
         if args.test:
             for test_x in test_dataset:
                 distributed_test_step(test_x)
             elbo = -test_loss.result()
             with test_summary_writer.as_default():
-                tf.summary.scalar('loss', test_loss.result(), step=epoch)
+                tf.summary.scalar('loss', elbo, step=epoch)
 
         display.clear_output(wait=False)
         print('Epoch: {}, time elapse for current epoch: {}'
@@ -551,8 +570,20 @@ def objective(trial):
             generate_from_noise(model,epoch,random_vector_for_generation,args.apply_sigmoid)
 
         if epoch %args.fid_interval==0 and args.fid:
-            fid_eval_and_store(epoch,model)
+            test_fid_score,validate_fid_score=fid_eval_and_store(epoch,model)
 
+
+        mse=test_loss.result()
+
+        if args.optuna:
+            if args.optuna_metric=='mse':
+                intermediate_value=mse
+            else:
+                intermediate_value=test_fid_score
+            trial.report(intermediate_value, epoch)
+
+            if trial.should_prune():
+                raise optuna.TrialPruned()
 
         train_loss.reset_states()
         test_loss.reset_states()
@@ -561,9 +592,10 @@ def objective(trial):
         vgg_loss.reset_states()
         fid_test_loss.reset_states()
         resnet_loss.reset_states()
+    #end epoch
 
     if args.fid:
-        fid_eval_and_store(args.epochs+1,model)
+        test_fid_score,validate_fid_score=fid_eval_and_store(args.epochs+1,model)
 
     if args.gan and args.extra_epochs>0:
         for epoch in range(args.epochs+1,1+args.epochs+args.extra_epochs):
@@ -590,31 +622,10 @@ def objective(trial):
                 generate_from_noise(model,epoch,random_vector_for_generation,args.apply_sigmoid)
 
             if epoch %args.fid_interval==0 and args.fid:
-                fid_eval_and_store(epoch,model)
+                test_fid_score,validate_fid_score=fid_eval_and_store(epoch,model)
 
     if args.fid:
-        fid_eval_and_store(epoch+1,model)
-
-    if args.generate_smote:
-        target_root=root_dict[args.dataset]
-        target_styles=[]
-        for s in os.listdir(target_root):
-            path=os.path.join(target_root,s)
-            if os.path.isdir(path):
-                length=len(get_npz_paths(args.max_dim,[s],target_root,True))
-                if length>args.smote_minimum and length < args.smote_maximum:
-                    target_styles.append(s)
-        #target_styles=[s for s in os.listdir(target_root) if s[0]!='.' and len(os.listdir(os.path.join(target_root,s))) >args.smote_minimum and len(os.listdir(os.path.join(target_root,s))) <args.smote_maximum]
-        print(target_styles)
-        for style in target_styles:
-            synthetic=make_smote(model,args.max_dim,style,args.smote_maximum)
-            print("style {} with {} SMOTE things".format(s,len(synthetic)))
-            for s,img in enumerate(synthetic):
-                new_file='{}.{}.{}.npy'.format(smote_sample,s,args.max_dim)
-                new_path=os.path.join(target_root,style,new_file)
-                np.save(new_path,255*img)
-                print("\tsaved at ",new_path)
-
+        test_fid_score,validate_fid_score=fid_eval_and_store(epoch+1,model)
 
     if args.evaluation_imgs >0:
         eval_dir=args.evaluation_path+args.name
@@ -642,3 +653,21 @@ def objective(trial):
         print("saved at ",save_path+"/decoder")
 
     print("all done!")
+
+    if args.optuna_metric=="mse":
+        return mse
+    else:
+        return test_fid_score
+
+    
+
+if args.optuna:
+    study = optuna.create_study(pruner=optuna.pruners.MedianPruner())
+    study.optimize(objective, n_trials=args.n_trials)
+    best_params = study.best_params
+    print(best_params)
+    os.makedirs('./studies/',exist_ok=True)
+    with open("./studies/best_{}.json".format(args.name),"w+") as file:
+        file.write(json.dumps(best_params))
+else:
+    objective(None)

@@ -2,6 +2,7 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 from string_globals import *
 import tensorflow as tf
+import tensorflow_datasets as tfds
 import numpy as np
 from random import Random
 #from sklearn.preprocessing import OneHotEncoder
@@ -224,6 +225,10 @@ def get_loader(max_dim=64,styles=all_styles_faces_2,limit=100,root=faces_npz_dir
         A tf.data.Dataset object.
     
     '''
+    if root == 'deep_weeds':
+        new_shape=[max_dim,max_dim]
+        big_ds=[tf.image.resize(d['image'],new_shape)/255 for d in tfds.load('deep_weeds',split='all', shuffle_files=True) if d['label'] in styles][:limit]
+        return tf.data.Dataset.from_tensor_slices(big_ds)
     paths=get_npz_paths(max_dim,styles,root,no_smote)
     shuffle(paths)
     paths=paths[:limit]
@@ -253,11 +258,18 @@ def get_loader_labels(max_dim=64,styles=all_styles_faces_2,limit=100,root=faces_
         A tf.data.Dataset object.
     
     '''
-    paths=get_npz_paths_labels(max_dim,styles,root,no_smote)
-    shuffle(paths)
-    paths=paths[:limit]
     ohencoder=OneHotEncoder(styles)
-    gen=generator_labels(paths,ohencoder)
+    if root == 'deep_weeds':
+        new_shape=[max_dim,max_dim]
+        big_ds=[(tf.image.resize(d['image'],new_shape)/255, ohencoder.transform(d['label'].numpy())) for d in tfds.load('deep_weeds',split='all', shuffle_files=True) if d['label'] in styles][:limit]
+        def gen():
+            for img,sty in big_ds:
+                yield (img,sty)
+    else:
+        paths=get_npz_paths_labels(max_dim,styles,root,no_smote)
+        shuffle(paths)
+        paths=paths[:limit]
+        gen=generator_labels(paths,ohencoder)
     image_size=(max_dim,max_dim,3)
     output_sig_shapes=tuple([tf.TensorSpec(shape=image_size),tf.TensorSpec(shape=(len(styles)))])
     return tf.data.Dataset.from_generator(gen,output_signature=output_sig_shapes)
@@ -280,6 +292,21 @@ def get_loader_oversample(max_dim,styles_quantity_dict,root): #this doesnt use s
         A dataset of images of the specified size and quantity.
     
     '''
+    if root == 'deep_weeds':
+        new_shape=[max_dim,max_dim]
+        styles_to_lists={
+            s: [tf.image.resize(d['image'],new_shape)/255 for d in tfds.load('deep_weeds',split='all', shuffle_files=True) if d['label'] == s] for s in styles_quantity_dict
+        }
+        big_ds=[]
+        for style,quantity in styles_quantity_dict.items():
+            count=0
+            while count<quantity:
+                add=len(styles_to_lists[style])
+                if add+count>quantity:
+                    add=quantity-count
+                big_ds+=styles_to_lists[style][:add]
+                count+=add
+        return tf.data.Dataset.from_tensor_slices(big_ds)   
     paths=[]
     for style,quantity in styles_quantity_dict.items():
         new_paths=get_npz_paths(max_dim,[style],root)

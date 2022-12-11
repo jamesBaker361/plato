@@ -17,6 +17,7 @@ all_styles_faces=[s for s in os.listdir(faces_dir) if s[0]!='.' if len(os.listdi
 all_styles_faces_smote=[s for s in os.listdir(faces_dir) if s[0]!='.' if len(os.listdir(os.path.join(faces_dir,s))) >250 and len(os.listdir(os.path.join(faces_dir,s)))<1000]
 all_styles_faces_npz=[faces_npz_dir+"/"+s for s in all_styles_faces]
 all_styles_faces_2=[s for s in os.listdir(faces_npz_dir_2) if s[0]!='.' and len(os.listdir(os.path.join(faces_npz_dir_2,s))) >=100]
+all_styles_weeds=[i for i in range(9)]
 #smote_styles_faces_2=[s for s in os.listdir(faces_npz_dir_2) if s[0]!='.' and len(os.listdir(os.path.join(faces_npz_dir_2,s))) >250 and len(os.listdir(os.path.join(faces_npz_dir_2,s))) <2500]
 
 all_styles_birds=[s for s in os.listdir(bird_npz_dir)if s[0]!='.']
@@ -38,7 +39,8 @@ dataset_default_all_styles={
     "faces": all_styles_faces,
     "art": all_styles,
     "mnist":all_digits,
-    "faces2":all_styles_faces_2
+    "faces2":all_styles_faces_2,
+    "deep_weeds":all_styles_weeds
 }
 
 style_quantity_dicts={
