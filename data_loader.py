@@ -337,16 +337,34 @@ def get_loader_oversample_labels(max_dim,styles_quantity_dict,root): #this doesn
         A tf.data.Dataset object that can be iterated over to get the images and labels.
     
     '''
-    paths=[]
-    for style,quantity in styles_quantity_dict.items():
-        new_paths=get_npz_paths_labels(max_dim,[style],root)
-        while len(new_paths) < quantity:
-            new_paths+=get_npz_paths_labels(max_dim,[style],root)
-        new_paths=new_paths[:quantity]
-        paths+=new_paths
-    shuffle(paths)
     ohencoder=OneHotEncoder([s for s in styles_quantity_dict.keys()])
-    gen=generator_labels(paths,ohencoder)
+    if root == 'deep_weeds':
+        new_shape=[max_dim,max_dim]
+        styles_to_lists={
+            s: [(tf.image.resize(d['image'],new_shape)/255, ohencoder.transform(d['label'].numpy())) for d in tfds.load('deep_weeds',split='all', shuffle_files=True) if d['label'] == s] for s in styles_quantity_dict
+        }
+        big_ds=[]
+        for style,quantity in styles_quantity_dict.items():
+            count=0
+            while count<quantity:
+                add=len(styles_to_lists[style])
+                if add+count>quantity:
+                    add=quantity-count
+                big_ds+=styles_to_lists[style][:add]
+                count+=add
+        def gen():
+            for img,sty in big_ds:
+                yield (img,sty)
+    else:
+        paths=[]
+        for style,quantity in styles_quantity_dict.items():
+            new_paths=get_npz_paths_labels(max_dim,[style],root)
+            while len(new_paths) < quantity:
+                new_paths+=get_npz_paths_labels(max_dim,[style],root)
+            new_paths=new_paths[:quantity]
+            paths+=new_paths
+        shuffle(paths)
+        gen=generator_labels(paths,ohencoder)
     image_size=(max_dim,max_dim,3)
     output_sig_shapes=tuple([tf.TensorSpec(shape=image_size),tf.TensorSpec(shape=(len(styles_quantity_dict)))])
     return tf.data.Dataset.from_generator(gen,output_signature=output_sig_shapes)
