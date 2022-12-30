@@ -211,6 +211,8 @@ def objective(trial):
         if args.validate:
             fid_validate_log_dir=args.logdir+args.name+"/fid_validate"
             fid_validate_summary_writer=tf.summary.create_file_writer(fid_validate_log_dir)
+        if args.c3vae:
+            args.fid_sample_size=args.fid_sample_size*len(args.genres)
 
     if args.gan:
         gp_log_dir=args.logdir+args.name+"/gp"

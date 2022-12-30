@@ -82,8 +82,25 @@ def get_steps(model,
         return loss
 
     def fid_step(model,noise,images2):
-        images1=model.sample(noise,False)
-        loss=calculate_fid(images1,images2,(args.max_dim,args.max_dim,3))
+        loss=0.0
+        if args.c3vae:
+            for g in range(len(args.genres)):
+                indices=[g for _ in range(len(noise))]
+                class_label=tf.one_hot(indices,len(args.genres))
+                images_real=[]
+                print(tf.shape(images2[0]),tf.shape(images2[1]))
+                for i in range(len(images2[0])):
+                    #print('images2[1][i]',images2[1][i])
+                    #print('tf.one_hot(g,len(args.genres)',tf.one_hot(g,len(args.genres)))
+                    if tf.math.reduce_all(tf.equal(images2[1][i],tf.one_hot(g,len(args.genres)))).numpy():
+                        images_real.append(images2[0][i])
+                print('len(images_real)',len(images_real))
+                images1=model.sample(noise, False, class_label)
+                loss+=calculate_fid(images1, images_real,(args.max_dim,args.max_dim,3))
+            loss/=len(args.genres)              
+        else:
+            images1=model.sample(noise,False)
+            loss=calculate_fid(images1,images2,(args.max_dim,args.max_dim,3))
         return loss
 
 

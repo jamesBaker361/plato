@@ -46,14 +46,10 @@ def get_data_loaders(args,global_batch_size,print_debug,num_examples_to_generate
 
     for i in _test.shuffle(10000,seed=123).batch(args.fid_sample_size):
         fid_test_sample=i
-        if args.c3vae:
-            [fid_test_sample, _]= i
         break
 
     for i in _validate.shuffle(10000, seed=123).batch(args.fid_sample_size):
         fid_validate_sample = i
-        if args.c3vae:
-            [fid_validate_sample, _] = i
         break
 
     # Pick a sample of the test set for generating output images
