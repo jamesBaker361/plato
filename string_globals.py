@@ -1,5 +1,6 @@
 
 import os
+import json
 npz_root='../../../../../scratch/jlb638/plato/imgs_npz' #where the npz matrices are; CHANGE THIS FOR UR OWN USES
 img_dir='../../../../../scratch/jlb638/plato/images' #where the actual images themselves are; CHANGE THIS
 mnist_dir='../../../../../scratch/jlb638/trainingSet/trainingSet'
@@ -20,6 +21,8 @@ all_styles_faces_2=[s for s in os.listdir(faces_npz_dir_2) if s[0]!='.' and len(
 all_styles_weeds=[i for i in range(9)]
 #smote_styles_faces_2=[s for s in os.listdir(faces_npz_dir_2) if s[0]!='.' and len(os.listdir(os.path.join(faces_npz_dir_2,s))) >250 and len(os.listdir(os.path.join(faces_npz_dir_2,s))) <2500]
 
+all_styles_faces_3=json.load(open("all_styles_faces.json"))['styles']
+
 all_styles_birds=[s for s in os.listdir(bird_npz_dir)if s[0]!='.']
 smote_sample="SMOTE_SAMPLE"
 gen_img_dir='./gen_imgs' #generated images
@@ -31,7 +34,9 @@ root_dict={
     "mnist":mnist_npz_root,
     "art":npz_root,
     "faces":faces_npz_dir,
-    "faces2":faces_npz_dir_2
+    "faces2":faces_npz_dir_2,
+    "deep_weeds":'deep_weeds',
+    "faces3":"faces3"
 }
 
 dataset_default_all_styles={
@@ -40,12 +45,14 @@ dataset_default_all_styles={
     "art": all_styles,
     "mnist":all_digits,
     "faces2":all_styles_faces_2,
-    "deep_weeds":all_styles_weeds
+    "deep_weeds":all_styles_weeds,
+    "faces3":all_styles_faces_3
 }
 
 style_quantity_dicts={
     "faces2":{s:7500 for s in all_styles_faces_2},
-    "deep_weeds": {s:7500 for s in all_styles_weeds}
+    "deep_weeds": {s:7500 for s in all_styles_weeds},
+    "faces3":{s:7500 for s in all_styles_faces_3}
 }
 
 #raw_image_dir='/scratch/jlb638/images/

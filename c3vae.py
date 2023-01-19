@@ -7,16 +7,32 @@ from cvae import *
 
 
 
-def adain(content, style, epsilon=1e-5, data_format='channels_last'): #stolen from https://github.com/ftokarev/tf-adain/blob/master/adain/norm.py
-    axes = [0,1]
+def adain(content, style, epsilon=1e-5): #stolen from https://github.com/ftokarev/tf-adain/blob/master/adain/norm.py
+    axes = [2,1]
 
+    batch_size=content.shape[0]
+    #print('content.shape',content.shape)
+    if batch_size is None:
+        try:
+            batch_size=tf.shape(content)[0]
+            #print('tf.shape(content)',tf.shape(content))
+        except:
+            try:
+                batch_size=len(content)
+            except:
+                print("couldnt figure out batch size")
+                pass
+    #print('style.shape',style.shape)
+    #print('tf.shape(style)',tf.shape(style))
     c_mean, c_var = tf.nn.moments(content, axes=axes, keepdims=True)
-    s_mean, s_var = tf.nn.moments(style, axes=axes, keepdims=False)
+    s_mean, s_var = tf.nn.moments(style,axes=[1] ,keepdims=True)
+    s_mean=tf.reshape(s_mean,[-1,1,1,1])
+    s_var=tf.reshape(s_var,[-1,1,1,1])
 
     c_std= tf.sqrt(c_var + epsilon)
     s_std =tf.sqrt(s_var + epsilon)
 
-    return s_std * (content - c_mean) / c_std + s_mean
+    return s_std * ((content - c_mean) / c_std) + s_mean
 
 class C3VAE(CVAE): #class conditioned convolutional VAE
     def __init__(self, n_classes,class_latent_dim,latent_dim,max_dim,*args,**kwargs):
@@ -37,9 +53,7 @@ class C3VAE(CVAE): #class conditioned convolutional VAE
                                 filters=f, kernel_size=5, strides=2, padding='same',
                                 activation='relu')(img)
             shape=img.shape[1:]
-            cn_layer=Dense(shape[0]*shape[1]*shape[2],activation='relu')(class_noise)
-            cn_layer=Reshape(target_shape=shape)(cn_layer)
-            img=adain(img,cn_layer)
+            img=adain(img,class_noise)
         img=tf.keras.layers.Conv2DTranspose(filters=3, kernel_size=3, strides=1, padding='same')(img)
         self.decoder=Model(inputs=[decoder_input,class_inputs],outputs=img)
 

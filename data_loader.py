@@ -3,12 +3,16 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 from string_globals import *
 import tensorflow as tf
 import tensorflow_datasets as tfds
+from datasets import load_dataset
+#from tensorflow.data import from_generator, from_tensor_slices
 import numpy as np
+from PIL import Image
 from random import Random
 #from sklearn.preprocessing import OneHotEncoder
 
 def shuffle(array):
-    return Random(1234).shuffle(array)
+    Random(1234).shuffle(array)
+    return array
 
 def get_img_paths(styles,img_dir=img_dir):
     '''It takes a list of styles and returns a list of tuples of the form (image_path,style,image_name)
@@ -225,9 +229,14 @@ def get_loader(max_dim=64,styles=all_styles_faces_2,limit=100,root=faces_npz_dir
         A tf.data.Dataset object.
     
     '''
+    new_shape=[max_dim,max_dim]
     if root == 'deep_weeds':
-        new_shape=[max_dim,max_dim]
-        big_ds=[tf.image.resize(d['image'],new_shape)/255 for d in tfds.load('deep_weeds',split='all', shuffle_files=True) if d['label'] in styles][:limit]
+        big_ds=shuffle([tf.image.resize(d['image'],new_shape)/255 for d in tfds.load('deep_weeds',split='all') if d['label'] in styles])[:limit]
+        return tf.data.Dataset.from_tensor_slices(big_ds)
+    elif root == 'faces3':
+        big_ds=shuffle([
+            np.asarray(d['image'].resize(new_shape, Image.BILINEAR ))/255 for d in load_dataset('jlbaker361/artfaces')['train'] if d['style'] in styles
+        ])[:limit]
         return tf.data.Dataset.from_tensor_slices(big_ds)
     paths=get_npz_paths(max_dim,styles,root,no_smote)
     shuffle(paths)
@@ -258,10 +267,18 @@ def get_loader_labels(max_dim=64,styles=all_styles_faces_2,limit=100,root=faces_
         A tf.data.Dataset object.
     
     '''
+
     ohencoder=OneHotEncoder(styles)
+    new_shape=[max_dim,max_dim]
     if root == 'deep_weeds':
-        new_shape=[max_dim,max_dim]
-        big_ds=[(tf.image.resize(d['image'],new_shape)/255, ohencoder.transform(d['label'].numpy())) for d in tfds.load('deep_weeds',split='all', shuffle_files=True) if d['label'] in styles][:limit]
+        big_ds=shuffle([(tf.image.resize(d['image'],new_shape)/255, ohencoder.transform(d['label'].numpy())) for d in tfds.load('deep_weeds',split='all') if d['label'] in styles])[:limit]
+        def gen():
+            for img,sty in big_ds:
+                yield (img,sty)
+    elif root=='faces3':
+        big_ds=shuffle([
+            (np.asarray(d['image'].resize(new_shape, Image.BILINEAR ))/255, ohencoder.transform(d['style'])) for d in load_dataset('jlbaker361/artfaces')['train'] if d['style'] in styles
+        ])[:limit]
         def gen():
             for img,sty in big_ds:
                 yield (img,sty)
@@ -273,6 +290,98 @@ def get_loader_labels(max_dim=64,styles=all_styles_faces_2,limit=100,root=faces_
     image_size=(max_dim,max_dim,3)
     output_sig_shapes=tuple([tf.TensorSpec(shape=image_size),tf.TensorSpec(shape=(len(styles)))])
     return tf.data.Dataset.from_generator(gen,output_signature=output_sig_shapes)
+
+
+
+def get_loader_oversample_splits(max_dim,styles_quantity_dict,root, test_split=0.1,val_split=0.1,labels=False):
+    assert test_split+val_split<1
+    train_split=1-(test_split+val_split)
+    new_shape=[max_dim,max_dim]
+    if labels==False:
+        if root == 'deep_weeds':
+            styles_to_lists={
+                s: shuffle([tf.image.resize(d['image'],new_shape)/255 for d in tfds.load('deep_weeds',split='all') if d['label'] == s]) for s in styles_quantity_dict
+            }
+        elif root=='faces3':
+            styles_to_lists = {
+                s: shuffle([
+                    np.asarray(d['image'].resize(new_shape, Image.BILINEAR ))/255 for d in load_dataset('jlbaker361/artfaces')['train'] if d['style'] == s
+                ]) for s in styles_quantity_dict
+            }
+        else:
+            styles_to_lists = {
+                s: shuffle([np.load(p)/255 for p in get_npz_paths(max_dim,[s],root)]) for s in styles_quantity_dict
+            }
+    else:
+        styles=[s for s in styles_quantity_dict.keys()]
+        ohencoder=OneHotEncoder(styles)
+        if root == 'deep_weeds':
+            styles_to_lists={
+                s: shuffle([(tf.image.resize(d['image'],new_shape)/255, ohencoder.transform(d['label'].numpy())) for d in tfds.load('deep_weeds',split='all') if d['label'] == s]) for s in styles_quantity_dict
+            }
+        elif root=='faces3':
+            styles_to_lists = {
+                s: shuffle([
+                    (np.asarray(d['image'].resize(new_shape, Image.BILINEAR ))/255, ohencoder.transform(d['style'])) for d in load_dataset('jlbaker361/artfaces')['train'] if d['style'] == s
+                ]) for s in styles_quantity_dict
+            }
+        else:
+            styles_to_lists = {
+                s: shuffle([(np.load(p)/255, ohencoder.transform(s)) for p in get_npz_paths(max_dim,[s],root)]) for s in styles_quantity_dict
+            }
+    def _get_loader():
+        train=[]
+        test=[]
+        val=[]
+        for style,quantity in styles_quantity_dict.items():
+            initial_images=len(styles_to_lists[style])
+            initial_test=int(test_split*initial_images)
+            initial_val=int(val_split*initial_images)
+            initial_train=int(train_split*initial_images)
+            target_test=int(test_split*quantity)
+            target_val=int(val_split*quantity)
+            target_train=int(train_split*quantity)
+
+            data_test=styles_to_lists[style][:initial_test]
+            data_val=styles_to_lists[style][initial_test:initial_test+initial_val]
+            data_train=styles_to_lists[style][initial_test+initial_val:]
+
+            s_test=[]
+            s_train=[]
+            s_val=[]
+
+            for s_list,target_quantity, initial_data in zip(
+                [s_test,s_val, s_train],
+                [target_test, target_val, target_train],
+                [data_test,data_val, data_train]):
+                count=0
+                while count < target_quantity:
+                    s_list.append(initial_data[count % len(initial_data)])
+                    count+=1
+            train=train+s_train
+            test=test+s_test
+            val=val+s_val
+        return train,test,val
+    train,test,val=_get_loader()
+    if labels==False:
+        return tf.data.Dataset.from_tensor_slices(train), tf.data.Dataset.from_tensor_slices(test), tf.data.Dataset.from_tensor_slices(val)
+    else:
+        image_size=(max_dim,max_dim,3)
+        output_sig_shapes=tuple([tf.TensorSpec(shape=image_size),tf.TensorSpec(shape=(len(styles_quantity_dict)))])
+        def _gen_labels(arr):
+            def _gen():
+                for (p,label) in arr:
+                    yield (p,label)
+            return _gen
+        gen_train=_gen_labels(train)
+        gen_test=_gen_labels(test)
+        gen_val=_gen_labels(val)
+        return tf.data.Dataset.from_generator(gen_train,output_signature=output_sig_shapes), tf.data.Dataset.from_generator(gen_test, output_signature=output_sig_shapes), tf.data.Dataset.from_generator(gen_val, output_signature=output_sig_shapes)
+
+
+
+
+
 
 def get_loader_oversample(max_dim,styles_quantity_dict,root): #this doesnt use smote it just gets extras/duplicates
     '''It takes a dictionary of styles and quantities, and returns a dataset of images of those styles,

@@ -15,6 +15,7 @@ from random import randrange
 import datetime
 from c3vae import C3VAE
 from attvae import *
+from stylevae import *
 from fid import calculate_fid
 from vgg import *
 from optimizer_config import get_optimizer
@@ -112,6 +113,12 @@ parser.add_argument("--optuna", type=bool, default=False, help='whether to use o
 parser.add_argument("--optuna_metric", type=str, default="mse",help="metric to optimize optuna for (mse, fid)")
 parser.add_argument("--n_trials",type=int,default=100,help="how many trials to run for optuna")
 
+parser.add_argument("--stylevae",default=False, type=bool, help="whether to use stylevae")
+parser.add_argument("--sv_fc_layers",default=4,type=int,help='style vae fully connected layers')
+parser.add_argument("--sv_fc_dims",default=16, type=int, help="style vae fully connnected layers dimensionality (#nodes)")
+parser.add_argument("--sv_fc_activation",default="sigmoid",type=str,help="stylevae fully connected layer activation function")
+parser.add_argument("--sv_fc_dropout_rate",type=float,default=0.1,help='stylevase fully connected dropout rate')
+
 for names,default in zip(["batch_size","max_dim","epochs","latent_dim","quantity","diversity_batches","test_split"],[16,64,10,2,250,4,10]):
     parser.add_argument("--{}".format(names),type=int,default=default)
 
@@ -121,18 +128,27 @@ def objective(trial):
     if args.optuna:
         args.test=True
         if args.attvae:
-            args.class_latent_dim=trial.suggest_categorical('class_latent_dim',[16,32,64])
             args.patch_size=trial.suggest_categorical('patch_size', [4,8,16,32])
             args.num_layers=trial.suggest_int("num_layers",3,6)
             args.d_encoder=trial.suggest_categorical("d_encoder",[16,32,64,128])
             args.d_decoder=trial.suggest_categorical("d_decoder",[16,32,64,128])
 
         if args.gan:
-            args.n_critic=trial.suggest_int("n_critic",3,10)
+            args.n_critic=trial.suggest_int("n_critic",1,8)
+            args.level=trial.suggest_categorical("discriminator_level",["dc","vgg" ,"efficient"])
 
         args.init_lr=trial.suggest_categorical("init_lr",[0.00001,0.00005,0.0001])
         args.batch_size=trial.suggest_categorical("batch_size",[8,16,32,64])
         args.latent_dim=trial.suggest_categorical("latent_dim",[8,16,32,64])
+
+        if args.c3vae:
+            args.class_latent_dim=trial.suggest_categorical('class_latent_dim',[16,32,64])
+
+        if args.stylevae:
+            args.sv_fc_layers=trial.suggest_int('sv_fc_layers',4,8)
+            args.sv_fc_dims=trial.suggest_categorical('sv_fc_dims',[16,32,64,128])
+            args.sv_fc_activation=trial.suggest_categorical('sv_fc_activation',['sigmoid','relu','linear'])
+            args.sv_fc_dropout_rate=trial.suggest_categorical('sv_fc_dropout_rate',[0.0,0.1,0.25,0.5])
 
     if len(args.genres)==0:
         args.genres=dataset_default_all_styles[args.dataset]
@@ -173,13 +189,6 @@ def objective(trial):
             print_debug(msg, tf.shape(tensor[0], tf.shape(tensor[1])))
         else:
             print_debug(msg,tf.shape(tensor))
-
-    actual_length=len(get_npz_paths(args.max_dim,args.genres, root_dict[args.dataset]))
-    actual_length=min(actual_length,args.quantity)
-    print_debug("actual length of dataset= {}".format(actual_length))
-
-    if args.kl_weight==0.0:
-        args.kl_weight=actual_length/global_batch_size
 
     train_log_dir = args.logdir + args.name + '/train'
     test_log_dir = args.logdir + args.name + '/test'
@@ -241,9 +250,11 @@ def objective(trial):
         if args.c3vae:
             model=C3VAE(len(args.genres),args.class_latent_dim,args.latent_dim,args.max_dim)
         if args.attvae:
-            print(strategy)
             model=AttentionVAE(args.patch_size,args.num_layers,args.d_encoder,args.d_decoder,args.latent_dim,args.max_dim,strategy)
             model(tf.random.uniform((1,args.max_dim,args.max_dim,3)))
+        if args.stylevae:
+            model=StyleVAE(args.sv_fc_layers,args.sv_fc_dims,args.sv_fc_dropout_rate,args.sv_fc_activation, args.latent_dim,args.max_dim)
+            #model(tf.random.uniform((1,args.max_dim,args.max_dim,3)))
         if args.load or len(args.loadpath) != 0:
             model.encoder=tf.keras.models.load_model(checkpoint_dir+"/"+args.loadpath+"/encoder")
             model.decoder=tf.keras.models.load_model(checkpoint_dir+"/"+args.loadpath+"/decoder")
@@ -593,6 +604,7 @@ def objective(trial):
         diversity_loss.reset_states()
         vgg_loss.reset_states()
         fid_test_loss.reset_states()
+        fid_validate_loss.reset_states()
         resnet_loss.reset_states()
     #end epoch
 

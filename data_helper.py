@@ -15,6 +15,14 @@ logger = logging.getLogger()
 old_level = logger.level
 logger.setLevel(100)
 
+def oversample(dataset,target_quantity):
+    result=[]
+    _data=[x for x in dataset]
+    while len(result)<target_quantity:
+        for x in _data:
+            result.append(x)
+    return result[:target_quantity]
+
 def get_data_loaders(args,global_batch_size,print_debug,num_examples_to_generate,strategy):
 
     sq_dict={k:v for k,v in style_quantity_dicts[args.dataset].items() if k in set(args.genres)}
