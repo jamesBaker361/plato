@@ -35,26 +35,24 @@ def adain(content, style, epsilon=1e-5): #stolen from https://github.com/ftokare
     return s_std * ((content - c_mean) / c_std) + s_mean
 
 class C3VAE(CVAE): #class conditioned convolutional VAE
-    def __init__(self, n_classes,class_latent_dim,latent_dim,max_dim,*args,**kwargs):
+    def __init__(self, n_classes,class_latent_dim,latent_dim,max_dim,class_noise_activation, img_activation, output_activation, *args,**kwargs):
         super(C3VAE,self).__init__(latent_dim,max_dim,*args,**kwargs)
         self.class_latent_dim=class_latent_dim
         self.n_classes=n_classes
         encoder_filters=[min(2** (i+5),512) for i in range(int(log2(max_dim))-1)]
         decoder_filters=encoder_filters[::-1]
         class_inputs=Input(shape=n_classes)
-        class_noise=Dense(class_latent_dim)(class_inputs)
+        class_noise=Dense(class_latent_dim, activation=class_noise_activation)(class_inputs)
         decoder_input=Input(shape=(latent_dim,))
         total_feature_space=4*decoder_filters[0]
-        img=Dense(units=total_feature_space, activation=tf.nn.relu)(decoder_input)
+        img=Dense(units=total_feature_space, activation=img_activation)(decoder_input)
         img=Reshape(target_shape=(2, 2, decoder_filters[0]))(img)
-        class_noise_layers=[Dense(class_latent_dim//4,activation='relu')(class_noise)]
         for d,f in enumerate(decoder_filters):
             img=Conv2DTranspose(
                                 filters=f, kernel_size=5, strides=2, padding='same',
                                 activation='relu')(img)
-            shape=img.shape[1:]
             img=adain(img,class_noise)
-        img=tf.keras.layers.Conv2DTranspose(filters=3, kernel_size=3, strides=1, padding='same')(img)
+        img=tf.keras.layers.Conv2DTranspose(filters=3, kernel_size=3, strides=1, padding='same', activation=output_activation)(img)
         self.decoder=Model(inputs=[decoder_input,class_inputs],outputs=img)
 
     @tf.function
@@ -93,9 +91,9 @@ class C3VAE(CVAE): #class conditioned convolutional VAE
 
 
 if __name__=="__main__":
-    model=C3VAE(15,32,32,64)
+    model=C3VAE(15,32,32,64,'linear','linear','linear')
     #model.encoder.summary()
     model.sample(None,False,None)
     img=tf.random.uniform([1,64,64,3])
     label=tf.random.uniform([1,15])
-    model(img,label)
+    model((img,label))

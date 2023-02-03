@@ -27,36 +27,50 @@ def get_data_loaders(args,global_batch_size,print_debug,num_examples_to_generate
 
     sq_dict={k:v for k,v in style_quantity_dicts[args.dataset].items() if k in set(args.genres)}
 
-    if args.oversample and args.c3vae:
-        loader=get_loader_oversample_labels(args.max_dim,sq_dict,root_dict[args.dataset])
-    elif args.oversample:
-        loader=get_loader_oversample(args.max_dim,sq_dict,root_dict[args.dataset])
-    elif args.c3vae:
-        loader=get_loader_labels(args.max_dim,sq_dict,args.quantity,root_dict[args.dataset],not args.use_smote)
+    if args.oversample:
+        if args.c3vae:
+            _train, _test, _validate=get_loader_oversample_splits(64,sq_dict,args.dataset,labels=True)
+        else:
+            _train, _test, _validate=get_loader_oversample_splits(64,sq_dict,args.dataset,labels=False)
+
     else:
-        loader=get_loader(args.max_dim,args.genres,args.quantity,root_dict[args.dataset],not args.use_smote)
+        if args.c3vae:
+            loader=get_loader_labels(args.max_dim,sq_dict,args.quantity,root_dict[args.dataset],not args.use_smote)
+        else:
+            loader=get_loader(args.max_dim,args.genres,args.quantity,root_dict[args.dataset],not args.use_smote)
 
-    _test=loader.enumerate().filter(lambda x,y: x % 10== 0).map(lambda x,y: y)
+        _test=loader.enumerate().filter(lambda x,y: x % 10== 0).map(lambda x,y: y)
 
-    test_dataset = _test.shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
+        _train=loader.enumerate().filter(lambda x,y: x % 10 >1).map(lambda x,y: y)
 
-    _validate = loader.enumerate().filter(lambda x,y: x % 10 == 1).map(lambda x,y: y)
+        _validate = loader.enumerate().filter(lambda x,y: x % 10 == 1).map(lambda x,y: y)
 
-    validate_dataset = _validate.shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
+    if args.c3vae:
+        _train=_train.map(lambda x,y: (tf.cast(x, tf.float32),tf.cast(y, tf.float32)))
+        _test=_test.map(lambda x,y: (tf.cast(x, tf.float32),tf.cast(y, tf.float32)))
+        _validate=_validate.map(lambda x,y: (tf.cast(x, tf.float32),tf.cast(y, tf.float32)))
+    else:
+        _train=_train.map(lambda x: tf.cast(x, tf.float32))
+        _test=_test.map(lambda x: tf.cast(x,tf.float32))
+        _validate=_validate.map(lambda x: tf.cast(x,tf.float32))
+
+    test_dataset = _test.batch(global_batch_size,drop_remainder=True)
+    
+    validate_dataset = _validate.batch(global_batch_size,drop_remainder=True)
+
+    train_dataset = _train.batch(global_batch_size,drop_remainder=True)
 
     print_debug("test cardinality ",len([_ for _ in test_dataset]))
-
-    train_dataset = loader.enumerate().filter(lambda x,y: x % 10 >1).map(lambda x,y: y).shuffle(10,reshuffle_each_iteration=False).batch(global_batch_size,drop_remainder=True)
-
+    
     print_debug("train cardinality ",len([_ for _ in train_dataset]))
 
     print_debug("dataset element_spec", train_dataset.element_spec)
 
-    for i in _test.shuffle(10000,seed=123).batch(args.fid_sample_size):
+    for i in _test.shuffle(100000,seed=123).batch(args.fid_sample_size):
         fid_test_sample=i
         break
 
-    for i in _validate.shuffle(10000, seed=123).batch(args.fid_sample_size):
+    for i in _validate.shuffle(100000, seed=123).batch(args.fid_sample_size):
         fid_validate_sample = i
         break
 

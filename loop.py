@@ -38,7 +38,7 @@ parser.add_argument("--name",type=str,default="")
 parser.add_argument("--save",type=str,default=False,help="whether to save this model")
 parser.add_argument("--load",default=False,type=bool,help="if there already exists a saved model with this name, load it")
 parser.add_argument("--loadpath",type=str,default="",help="path to load saved autoencoder from")
-parser.add_argument("--dataset",type=str,default="faces2",help="name of dataset (mnist or art or faces or faces2 or deep_weeds)")
+parser.add_argument("--dataset",type=str,default="faces3",help="name of dataset (mnist or art or faces or faces2 or faces3 or deep_weeds)")
 parser.add_argument("--use_smote",type=bool,default=False,help="whether to use the normal dataset but with added synthetic samples")
 parser.add_argument("--oversample",type=bool,default=False,help="whether to use normal images but oversampling the smaller classes")
 parser.add_argument("--genres",nargs='+',type=str,default=[],help="which digits/artistic genres ")
@@ -58,6 +58,10 @@ parser.add_argument("--resnet_lambda",type=float,default=0.1,help="coefficient o
 
 parser.add_argument("--c3vae",type=bool,default=False,help="whether to use c3vae")
 parser.add_argument("--class_latent_dim",type=int,default=32)
+parser.add_argument("--c3_class_noise_activation",type =str, default="relu")
+parser.add_argument("--c3_img_activation",type =str, default="relu")
+parser.add_argument("--c3_output_activation",type =str, default="relu")
+#class_noise_activation, img_activation, output_activation
 
 parser.add_argument("--attvae", type=bool, default=False, help='whether to use attentional VAE or not')
 parser.add_argument("--patch_size", type=int, default=16,help="patch size for vision transformer")
@@ -126,6 +130,7 @@ args = parser.parse_args()
 
 def objective(trial):
     if args.optuna:
+        activations=['relu', 'linear', 'selu', 'sigmoid', 'swish', 'tanh']
         args.test=True
         if args.attvae:
             args.patch_size=trial.suggest_categorical('patch_size', [4,8,16,32])
@@ -143,11 +148,15 @@ def objective(trial):
 
         if args.c3vae:
             args.class_latent_dim=trial.suggest_categorical('class_latent_dim',[16,32,64])
+            args.c3_class_noise_activation = trial.suggest_categorical('c3_class_noise_activation', activations)
+            args.c3_img_activation = trial.suggest_categorical('c3_img_activation', activations)
+            args.c3_output_activation = trial.suggest_categorical('c3_output_activation', activations)
+            #class_noise_activation, img_activation, output_activation
 
         if args.stylevae:
             args.sv_fc_layers=trial.suggest_int('sv_fc_layers',4,8)
             args.sv_fc_dims=trial.suggest_categorical('sv_fc_dims',[16,32,64,128])
-            args.sv_fc_activation=trial.suggest_categorical('sv_fc_activation',['sigmoid','relu','linear'])
+            args.sv_fc_activation=trial.suggest_categorical('sv_fc_activation',activations)
             args.sv_fc_dropout_rate=trial.suggest_categorical('sv_fc_dropout_rate',[0.0,0.1,0.25,0.5])
 
     if len(args.genres)==0:
@@ -220,8 +229,6 @@ def objective(trial):
         if args.validate:
             fid_validate_log_dir=args.logdir+args.name+"/fid_validate"
             fid_validate_summary_writer=tf.summary.create_file_writer(fid_validate_log_dir)
-        if args.c3vae:
-            args.fid_sample_size=args.fid_sample_size*len(args.genres)
 
     if args.gan:
         gp_log_dir=args.logdir+args.name+"/gp"
@@ -248,7 +255,7 @@ def objective(trial):
         resnet_style_extractor=None
         model = CVAE(args.latent_dim,args.max_dim)
         if args.c3vae:
-            model=C3VAE(len(args.genres),args.class_latent_dim,args.latent_dim,args.max_dim)
+            model=C3VAE(len(args.genres),args.class_latent_dim,args.latent_dim,args.max_dim,args.c3_class_noise_activation, args.c3_img_activation, args.c3_output_activation)
         if args.attvae:
             model=AttentionVAE(args.patch_size,args.num_layers,args.d_encoder,args.d_decoder,args.latent_dim,args.max_dim,strategy)
             model(tf.random.uniform((1,args.max_dim,args.max_dim,3)))

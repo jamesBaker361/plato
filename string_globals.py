@@ -50,9 +50,9 @@ dataset_default_all_styles={
 }
 
 style_quantity_dicts={
-    "faces2":{s:7500 for s in all_styles_faces_2},
-    "deep_weeds": {s:7500 for s in all_styles_weeds},
-    "faces3":{s:7500 for s in all_styles_faces_3}
+    "faces2":{s:5000 for s in all_styles_faces_2},
+    "deep_weeds": {s:5000 for s in all_styles_weeds},
+    "faces3":{s:5000 for s in all_styles_faces_3}
 }
 
 #raw_image_dir='/scratch/jlb638/images/

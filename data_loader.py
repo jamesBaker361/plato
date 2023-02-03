@@ -303,11 +303,15 @@ def get_loader_oversample_splits(max_dim,styles_quantity_dict,root, test_split=0
                 s: shuffle([tf.image.resize(d['image'],new_shape)/255 for d in tfds.load('deep_weeds',split='all') if d['label'] == s]) for s in styles_quantity_dict
             }
         elif root=='faces3':
+            print(styles_quantity_dict)
+            print(set([d['style'] for d in load_dataset('jlbaker361/artfaces')['train']]))
             styles_to_lists = {
                 s: shuffle([
                     np.asarray(d['image'].resize(new_shape, Image.BILINEAR ))/255 for d in load_dataset('jlbaker361/artfaces')['train'] if d['style'] == s
                 ]) for s in styles_quantity_dict
             }
+            for k,v in styles_to_lists.items():
+                print(k, len(v))
         else:
             styles_to_lists = {
                 s: shuffle([np.load(p)/255 for p in get_npz_paths(max_dim,[s],root)]) for s in styles_quantity_dict
@@ -334,10 +338,13 @@ def get_loader_oversample_splits(max_dim,styles_quantity_dict,root, test_split=0
         test=[]
         val=[]
         for style,quantity in styles_quantity_dict.items():
+            print(style, len(styles_to_lists[style]))
             initial_images=len(styles_to_lists[style])
             initial_test=int(test_split*initial_images)
             initial_val=int(val_split*initial_images)
             initial_train=int(train_split*initial_images)
+            if initial_train ==0 or initial_test==0 or initial_val ==0:
+                pass
             target_test=int(test_split*quantity)
             target_val=int(val_split*quantity)
             target_train=int(train_split*quantity)
