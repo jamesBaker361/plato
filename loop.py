@@ -58,9 +58,9 @@ parser.add_argument("--resnet_lambda",type=float,default=0.1,help="coefficient o
 
 parser.add_argument("--c3vae",type=bool,default=False,help="whether to use c3vae")
 parser.add_argument("--class_latent_dim",type=int,default=32)
-parser.add_argument("--c3_class_noise_activation",type =str, default="relu")
+parser.add_argument("--c3_class_noise_activation",type =str, default="sigmoid")
 parser.add_argument("--c3_img_activation",type =str, default="relu")
-parser.add_argument("--c3_output_activation",type =str, default="relu")
+parser.add_argument("--c3_output_activation",type =str, default="sigmoid")
 #class_noise_activation, img_activation, output_activation
 
 parser.add_argument("--attvae", type=bool, default=False, help='whether to use attentional VAE or not')
@@ -84,7 +84,7 @@ parser.add_argument("--clipnorm",type=float,default=1.0,help="max gradient norm"
 
 parser.add_argument("--fid",type=bool,default=False,help="whether to do FID scoring")
 parser.add_argument("--fid_interval",type=int, default=10,help="FID scoring every X intervals")
-parser.add_argument("--fid_sample_size",type=int,default=1000,help="how many images to do each FID scoring")
+parser.add_argument("--fid_sample_size",type=int,default=750,help="how many images to do each FID scoring")
 
 parser.add_argument("--apply_sigmoid",type=bool,default=False,help="whether to apply sigmoid when sampling")
 
@@ -148,9 +148,9 @@ def objective(trial):
 
         if args.c3vae:
             args.class_latent_dim=trial.suggest_categorical('class_latent_dim',[16,32,64])
-            args.c3_class_noise_activation = trial.suggest_categorical('c3_class_noise_activation', activations)
-            args.c3_img_activation = trial.suggest_categorical('c3_img_activation', activations)
-            args.c3_output_activation = trial.suggest_categorical('c3_output_activation', activations)
+            args.c3_class_noise_activation = 'sigmoid' #trial.suggest_categorical('c3_class_noise_activation', activations)
+            args.c3_img_activation = 'relu' #trial.suggest_categorical('c3_img_activation', activations)
+            args.c3_output_activation = 'sigmoid' #trial.suggest_categorical('c3_output_activation', activations)
             #class_noise_activation, img_activation, output_activation
 
         if args.stylevae:
@@ -684,11 +684,15 @@ def objective(trial):
 
 if args.optuna:
     study = optuna.create_study(pruner=optuna.pruners.MedianPruner())
-    study.optimize(objective, n_trials=args.n_trials)
-    best_params = study.best_params
-    print(best_params)
-    os.makedirs('./studies/',exist_ok=True)
-    with open("./studies/best_{}.json".format(args.name),"w+") as file:
-        file.write(json.dumps(best_params))
+    try:
+        study.optimize(objective, n_trials=args.n_trials, gc_after_trial=True)
+    except tf.errors.ResourceExhaustedError:
+        print("resources exhausted :(((")
+    finally:
+        best_params = study.best_params
+        print(best_params)
+        os.makedirs('./studies/',exist_ok=True)
+        with open("./studies/best_{}.json".format(args.name),"w+") as file:
+            file.write(json.dumps(best_params))
 else:
     objective(None)

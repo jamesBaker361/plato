@@ -344,6 +344,7 @@ def get_loader_oversample_splits(max_dim,styles_quantity_dict,root, test_split=0
             initial_val=int(val_split*initial_images)
             initial_train=int(train_split*initial_images)
             if initial_train ==0 or initial_test==0 or initial_val ==0:
+                print(style, 'initial_train == {} initial_test=={} initial_val =={}'.format(initial_train, initial_test, initial_val))
                 pass
             target_test=int(test_split*quantity)
             target_val=int(val_split*quantity)
@@ -365,11 +366,13 @@ def get_loader_oversample_splits(max_dim,styles_quantity_dict,root, test_split=0
                 while count < target_quantity:
                     s_list.append(initial_data[count % len(initial_data)])
                     count+=1
+            print(style, len(s_test), len(s_train), len(s_val))
             train=train+s_train
             test=test+s_test
             val=val+s_val
         return train,test,val
     train,test,val=_get_loader()
+    print(len(train), len(test),len(val))
     if labels==False:
         return tf.data.Dataset.from_tensor_slices(train), tf.data.Dataset.from_tensor_slices(test), tf.data.Dataset.from_tensor_slices(val)
     else:

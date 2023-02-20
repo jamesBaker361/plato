@@ -97,6 +97,7 @@ def get_steps(model,
                 print('len(images_real)',len(images_real))
                 images1=model.sample(noise, False, class_label)
                 loss+=calculate_fid(images1, images_real,(args.max_dim,args.max_dim,3))
+                del images1
             loss/=len(args.genres)              
         else:
             images1=model.sample(noise,False)
