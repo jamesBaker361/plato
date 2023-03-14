@@ -54,11 +54,16 @@ def get_data_loaders(args,global_batch_size,print_debug,num_examples_to_generate
         _test=_test.map(lambda x: tf.cast(x,tf.float32))
         _validate=_validate.map(lambda x: tf.cast(x,tf.float32))
 
-    test_dataset = _test.batch(global_batch_size,drop_remainder=True)
-    
-    validate_dataset = _validate.batch(global_batch_size,drop_remainder=True)
+    while global_batch_size > min(len([t for t in _test]), len([v for v in _validate])):
+        global_batch_size = global_batch_size -4
 
-    train_dataset = _train.batch(global_batch_size,drop_remainder=True)
+    print('global_batch_size is = ',global_batch_size)
+
+    test_dataset = _test.batch(global_batch_size,drop_remainder=False)
+    
+    validate_dataset = _validate.batch(global_batch_size,drop_remainder=False)
+
+    train_dataset = _train.batch(global_batch_size,drop_remainder=False)
 
     print_debug("test cardinality ",len([_ for _ in test_dataset]))
     

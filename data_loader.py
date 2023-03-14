@@ -293,7 +293,7 @@ def get_loader_labels(max_dim=64,styles=all_styles_faces_2,limit=100,root=faces_
 
 
 
-def get_loader_oversample_splits(max_dim,styles_quantity_dict,root, test_split=0.1,val_split=0.1,labels=False):
+def get_loader_oversample_splits(max_dim,styles_quantity_dict,root, test_split=0.1,val_split=0.1,labels=False,min_dim=32):
     assert test_split+val_split<1
     train_split=1-(test_split+val_split)
     new_shape=[max_dim,max_dim]
@@ -307,7 +307,7 @@ def get_loader_oversample_splits(max_dim,styles_quantity_dict,root, test_split=0
             print(set([d['style'] for d in load_dataset('jlbaker361/artfaces')['train']]))
             styles_to_lists = {
                 s: shuffle([
-                    np.asarray(d['image'].resize(new_shape, Image.BILINEAR ))/255 for d in load_dataset('jlbaker361/artfaces')['train'] if d['style'] == s
+                    np.asarray(d['image'].resize(new_shape, Image.BILINEAR ))/255 for d in load_dataset('jlbaker361/artfaces')['train'] if d['style'] == s and d['image'].height >= min_dim
                 ]) for s in styles_quantity_dict
             }
             for k,v in styles_to_lists.items():
@@ -326,7 +326,7 @@ def get_loader_oversample_splits(max_dim,styles_quantity_dict,root, test_split=0
         elif root=='faces3':
             styles_to_lists = {
                 s: shuffle([
-                    (np.asarray(d['image'].resize(new_shape, Image.BILINEAR ))/255, ohencoder.transform(d['style'])) for d in load_dataset('jlbaker361/artfaces')['train'] if d['style'] == s
+                    (np.asarray(d['image'].resize(new_shape, Image.BILINEAR ))/255, ohencoder.transform(d['style'])) for d in load_dataset('jlbaker361/artfaces')['train'] if d['style'] == s and d['image'].height >= min_dim
                 ]) for s in styles_quantity_dict
             }
         else:
@@ -353,6 +353,9 @@ def get_loader_oversample_splits(max_dim,styles_quantity_dict,root, test_split=0
             data_test=styles_to_lists[style][:initial_test]
             data_val=styles_to_lists[style][initial_test:initial_test+initial_val]
             data_train=styles_to_lists[style][initial_test+initial_val:]
+
+            if len(data_test)==0 or len(data_val)==0 or len(data_train)==0:
+                print(style, "len(data_test)=={} or len(data_val)=={} or len(data_train)=={}".format(len(data_test),len(data_val),len(data_train)))
 
             s_test=[]
             s_train=[]
