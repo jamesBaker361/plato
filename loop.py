@@ -26,6 +26,7 @@ from generate_img_helpers import *
 from  step_helpers import *
 logger = logging.getLogger()
 old_level = logger.level
+from keras.utils.layer_utils import count_params
 logger.setLevel(100)
 
 print(datetime.datetime.now().strftime("%m/%d/%Y %H:%M:%S"))
@@ -262,6 +263,8 @@ def objective(trial):
         if args.stylevae:
             model=StyleVAE(args.sv_fc_layers,args.sv_fc_dims,args.sv_fc_dropout_rate,args.sv_fc_activation, args.latent_dim,args.max_dim)
             #model(tf.random.uniform((1,args.max_dim,args.max_dim,3)))
+        n_params=count_params(model.trainable_weights)
+        print("n_params = ", n_params)
         if args.load or len(args.loadpath) != 0:
             model.encoder=tf.keras.models.load_model(checkpoint_dir+"/"+args.loadpath+"/encoder")
             model.decoder=tf.keras.models.load_model(checkpoint_dir+"/"+args.loadpath+"/decoder")
